@@ -1,2 +1,3 @@
-# OD-filter-testing
-Filter comparison program, explicitly for near rectilinear halo orbit (NRHO) determination. Further development would see this integrated with an orbit propagator, such that other orbit types could be easily selected and tested.
+# OD-filter-testing - point propagation
+Current propagation model is the circular restricted 3 body problem (CR3BP) model for simplicity's sake during development. The hope is to incorporate the HALO propagator for even more accurate results. 
+
