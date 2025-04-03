@@ -12,4 +12,8 @@ The interface allows you to set which filter to run out of the following filters
 
 An additional hybridisation option is also included which allows any of the aforementioned filters to be implemented together. This hybrid filter option was implemented specifically with NRHO OD in mind, as the main issue with NRHOs is that towards the perilune their dynamics become increasingly unstable, and thus far more difficult for simpler and more efficient filters to achieve adequate OD results. Thus, testing an option that allows for implementation of more complex filters only when they are needed may provide a computational advantage. Currently, for the hybridisation option, boundary conditions are user set manually, with the hybrid function then sorting the trajectory data into stable and unstable regions for computation. This will allow testing on the impacts of broadening and narrowing the unstable region in which the more advanced filter runs on the OD accuracy. 
 
+This interface lastly generates visualisation and error plots for direct comparison between the truth trajectory and filter results.
+
 It should also be noted that currently points are propagated via the circular restricted three-body problem equations (CR3BP), however, it is desired that a propagator should be integrated into the program. 
+
+This project is largely developed using the HALO propagator, link to GitHub repositary here: [High-precision-Analyser-of-Lunar-Orbits](https://github.com/yang-researchgroup/High-precision-Analyser-of-Lunar-Orbits). 
