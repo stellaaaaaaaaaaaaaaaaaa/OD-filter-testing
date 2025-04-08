@@ -36,11 +36,9 @@ def run_unscented_schmidt_KF(XREF, tk, c, Pcc, Rk, Qd):
             else:
                 Pkminus1 = covariance_results[i-1] #previous covariance/uncertainty determined from last read
         
-        XREF0 == XREFkminus1 #current reference state
-        P0 == Pkminus1 #covariance set by you
         tk = tk[i+1]
         
-        P0 = Pxx
+        Pxx = Pkminus1
         Pxc = np.zeros(6) #check this lol
         Pcx = np.transpose(Pxc)
         
@@ -48,32 +46,32 @@ def run_unscented_schmidt_KF(XREF, tk, c, Pcc, Rk, Qd):
         PcxPcc = np.stack((Pcx, Pcc), axis = 1).shape
         Pzz = np.stack((PxxPxc, PcxPcc)).shape
         
-        #step 3: read next observation 
-        #use CR3BP function to obtain XREFk (current reference state) and STM(tk, tk-1)
-        NRHOmotion(XREF0, P0, tkminus1, tk, Rk)
         
-        #step 4: combine XREFk and consider parameter vector to get 'z'
-        z = np.vstack((XREFk, c))
+        #step 3: combine XREFk and consider parameter vector to get 'z'
+        z = np.vstack((XREFminus1, c))
         
         #measurement mapping matrices
         #hx, hc, assume no change, identity matrices
+       
         
-        #step 3: compute sigma point matrix, Szz via Cholesky
+        #step 4: compute sigma point matrix, Szz via Cholesky
         Szz = np.linalg.cholesky(Pzz, lower=True)
         sigma_matrix = np.zeros((L, 2*L+1)) #empty matrix
         
+        sigma_matrix[:, 0] = z #first sigma point
+        
         for i in range(L):
-            sigma_matrix[:, i+1] = XREFminus1 + gamma*Szz[:, i]
+            sigma_matrix[:, i+1] = z + gamma*Szz[:, i]
             
         for i in range(L):
-            sigma_matrix[:, i+L+1] = XREFminus1 - gamma*Szz[:, i]
+            sigma_matrix[:, i+L+1] = z - gamma*Szz[:, i]
         
         
         #step 5: time update !! 
         #this is different because each sigma point (13) is propagated with the equations of motion
         Zk = np.zeros((L, 2*L+1)) #empty matrix
         for i in range(L):
-            Zk[:, i+1] = NRHOmotion(sigma_matrix[:, i], P0, tkminus1, tk, Rk)
+            Zk[:, i+1] = NRHOmotion(sigma_matrix[:, i], Pkminus1, tkminus1, tk, Rk)
             
         
         #step 6: process noise step
@@ -83,53 +81,81 @@ def run_unscented_schmidt_KF(XREF, tk, c, Pcc, Rk, Qd):
             zksigma = Wi*Zk[:,i]
         
         shape = (6,1)
-        zk = np.zeros(shape) #initialise
-        zk = np.sum(zksigma, axis=1)
+        Zbark = np.zeros(shape) #initialise
+        Zbark = np.sum(zksigma, axis=1)
         
         #process noise covariance
         
         Pzzksigma = np.zeros((L, 2*L+1))
         for i in range(2*L):
-            Pzzksigma[:, i] = Wic*np.dot(self, np.subtract(sigma_matrix, Xk), np.subtract(sigma_matrix, Xk)) + Qd
+            Pzzksigma[:, i] = Wi*np.dot(np.subtract(sigma_matrix[:, i], Zbark), np.transpose(np.subtract(sigma_matrix[:, i], Zbark)))
             
         shape = (6,1)
         Pzzk = np.zeros(shape) #initialise
-        Pzzk = np.sum(Pzzksigma, axis=1)
+        Pzzk = np.sum(Pzzksigma, axis=1) + Qd
         
         Szznew = np.linalg.cholesky(Pzzk, lower=True)
         sigma_matrix_new = np.zeros((L, 2*L+1)) #empty matrix
         
+        sigma_matrix_new[:, 0] = Zbark       
+        
         for i in range(L):
-            sigma_matrix_new[:, i+1] = Xk + gamma*Szznew[:, i]
+            sigma_matrix_new[:, i+1] = Zbark + gamma*Szznew[:, i]
             
         for i in range(L):
-            sigma_matrix_new[:, i+L+1] = Xk - gamma*Szznew[:, i]
+            sigma_matrix_new[:, i+L+1] = Zbark - gamma*Szznew[:, i]
         
         
         #step 7: predicted measurement
         #use the UT to compute
-        G == sigma_matrix_new #assuming full state is observed
-        upsilon == G #just maintaining equation conventions
-        H = np.eye(6) #observation mapping matrix
+        
+        upsilon = np.zeros((L, 2*L+1)) #empty matrix
+        for i in range(L):
+            upsilon[:, i+1] = NRHOmotion(sigma_matrix_new[:, i], Pkminus1, tkminus1, tk)
+        
+        Ybarksigma = np.zeros((L, 2*L+1))
         
         for i in range(2*L):
-            Ybarksigma = Wi*upsilon[:, i]
+            Ybarksigma[:,i+1] = Wi*upsilon[:, i]
             
         shape = (6,1)
         Ybark = np.zeros(shape) #initialise
         Ybark = np.sum(Ybarksigma, axis=1)
         
+        
         #step 8: innovation and cross-correlation
+        
+        innovation_op = np.zeros((L, 2*L+1))
+        crosscor_op = np.zeros((L, 2*L+1))
+        
         for i in range(2*L):
-            Pyy = Rk + np.sum(Wi*np.dot(np.subtract(upsilon, Ybark), np.transpose(np.subtract(upsilon, Ybark))), axis=1) #innovation
-            Pzy = np.sum(Wi*np.dot(np.subtract(sigma_matrix, zk), np.transpose(np.subtract(upsilon, Ybark))), axis=1) #cross-correlation
+            innovation_op[:, i] = Wi*np.dot(np.subtract(upsilon[:,i], Ybark), np.transpose(np.subtract(upsilon[:,i], Ybark)))
+            crosscor_op[:, i] = Wi*np.dot(np.subtract(sigma_matrix[:,i], Zbark), np.transpose(np.subtract(upsilon[:,i], Ybark)))
+            
+            Pyy = Rk + np.sum(innovation_op, axis=1) #innovation
+            Pzy = np.sum(crosscor_op, axis=1) #cross-correlation
+    
         
         #step 9: corrector update
         Kz = Pzy @ np.linalg.inv(Pyy) #Kalman gain
-        Kx = Kz[0,0]
+        
+        Kx = np.array([[Kz[0,0]],
+                       [Kz[0,1]],
+                       [Kz[0,2]],
+                       [Kz[0,3]],
+                       [Kz[0,4]],
+                       [Kz[0,5]]])
+        
+        Kc = np.array([[Kz[0,6]],
+                       [Kz[0,7]],
+                       [Kz[0,8]],
+                       [Kz[0,9]]])
+        
         KX = np.array([[Kx],
                        [0]])
-        zhatk = zk + KX @ np.subtract(Yk, Ybark) #final state estimation
+        
+        Yk = XREF[i+1]
+        Zkfinal = Zbark + KX @ np.subtract(Yk, Ybark) #final state estimation
         
         Kc = Kz[0,1]
         uncert = np.array([[Kx @ Pyy @ np.transpose(Kx), Kx @ Pyy @ np.transpose(Kc)],
@@ -140,7 +166,7 @@ def run_unscented_schmidt_KF(XREF, tk, c, Pcc, Rk, Qd):
         #repeat for next observation
         #need to store data in an array such that the filter and the truth data can be plotted against each other
         
-        filter_results[i] = zhatk
+        filter_results[i] = Zkfinal
         covariance_results[i] = Pzzk
         
         
