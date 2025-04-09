@@ -16,11 +16,12 @@ def run_square_root_CKF(XREF, tk, Rk, Qd):
     
     for i, row in enumerate(XREF):
     
-        #step 1: compute weights (via unscented transform)
+        #step 1: compute weights 
         nx = 6
         Wi = 1/(2*nx)
         
-        xi = sqrt(nx) #cubature point
+        xi = np.sqrt(nx) #cubature point
+        
         
         #step 2: initialisation (a priori)
         tkminus1 = tk[i] #time at last observation
@@ -35,93 +36,102 @@ def run_square_root_CKF(XREF, tk, Rk, Qd):
             else:
                 Pkminus1 = covariance_results[i-1] #previous covariance/uncertainty determined from last read
         
-        XREF0 == XREFkminus1 #current reference state
-        P0 == Pkminus1 #covariance set by you
         tk = tk[i+1]
+             
         
-        
-        #step 3: read next observation 
-        #use CR3BP function to obtain XREFk (current reference state)
-        NRHOmotion(XREF0, P0, tkminus1, tk, Rk)
-        xhat == XREF0 #state expected value (mean) - I think this is just the current reference state
-        
-        #step 4: compute square root cubature point matrix, S0 via cholesky
-        stateP = np.subtract(x0, xhat) @ np.transpose(np.subtract(x0, xhat))
-        S0 = np.linalg.cholesky(stateP, lower=True)
+        #step 3: compute square root cubature point matrix, S0 via cholesky
+        Proot = np.linalg.cholesky(Pkminus1, lower = True)
         
         #evaluate cubature point matrix
-        cub_matrix = np.zeros((nx, nx+1)) #empty matrix
+        cub_matrix = np.zeros((nx, 2*nx+1)) #empty matrix
+        
+        cub_matrix[:, 0] = XREFminus1
         
         for i in range(nx):
-            cub_matrix[:, i] = xhat + xi*S0[:, i]
+            cub_matrix[:, i] = XREFminus1 + xi*Proot[:, i]
             
         for i in range(nx):
-            cub_matrix[:, i+nx] = xhat - xi*S0[:, i]
+            cub_matrix[:, i+nx] = XREFminus1 - xi*Proot[:, i]
         
-        #step 5: time update !!
+        
+        #step 4: time update !!
         #this is different because each sigma point (13) is propagated with the equations of motion
-        xkcub = np.zeros((nx, nx+1)) #empty matrix
+        xkcub = np.zeros((nx, 2*nx+1)) #empty matrix
+        
         for i in range(nx):
-            xkcub[:, i+1] = Wi*NRHOmotion(cub_matrix[:, i], P0, tkminus1, tk, Rk)
+            xkcub[:, i+1] = NRHOmotion(cub_matrix[:, i], Pkminus1, tkminus1, tk)
         
+        
+        #step 5: process noise step
         shape = (6,1)
-        xk = np.zeros(shape) #initialise
-        xk = np.sum(xkcub, axis=1)
+        xhat = np.zeros(shape) #initialise
+        xhat = Wi*np.sum(xkcub, axis=1) #predicted state 
         
-        for i in range (nx):
-            xk[:, i+1] = xkcub[:, i] - xhat
+        
+        lbdamat = np.zeros((nx, 2*nx+1)) #empty matrix
+        
+        for i in range (2*nx):
+            lbdamat[:, i+1] = xkcub[:, i] - xhat
+        
+        
+        lbda = 1/(np.sqrt(2*nx)) * lbdamat 
             
-        lbda = 1/xi * xk
-            
-        shape = (6,1)
-        Pk = np.zeros(shape) #initialise
-        Pk = np.sum(Pkcub, axis=1)
+        Pkcub = np.zeros((nx, 2*nx+1))
+        for i in range(2*nx):
+            Pkcub[:, i] = np.dot(np.subtract(xkcub[:, i]/Wi, xhat), np.transpose(np.subtract(xkcub[:, i]/Wi, xhat))*Wi)
         
-        Snew = np.linalg.cholesky(Pk, lower=True)
-        
-        #step 6: process noise step
         #process noise covariance
         SQ = np.linalg.cholesky(Qd, lower=True)
         
-        Sk = np.linalg.lu([lbda SQ])
+        Sk = np.linalg.lu([lbda, SQ], lower=True)
         
-        #step 7: predicted measurement
+        
+        #step 6: predicted measurement
         #use the cubature rule to compute
         
         #new propagated cubature points with new Sk
         cub_matrix_new = np.zeros((nx, nx+1)) #empty matrix
         
-        for i in range (nx):
-            cub_matrix_new = xi*Sk + xk[:, i+1]
+        cub_matrix_new[:, 0] = xhat
         
-        h = np.eye(6) #measurement mapping matrix, identity matrix because we know the state (no need to convert from measurement data)
+        for i in range(nx):
+            cub_matrix[:, i] = xhat + xi*Sk[:, i]
+            
+        for i in range(nx):
+            cub_matrix[:, i+nx] = xhat - xi*Sk[:, i]
         
-        Zk = h @ cub_matrix_new
+        cub_matrix_new = np.zeros((nx, nx+1)) #empty matrix
+            
+        upsilon = np.zeros((nx, 2*nx+1)) #empty matrix
         
-        #predicted measurement
+        for i in range(nx):
+            upsilon[:, i] = NRHOmotion(cub_matrix_new[:,i+1], Pkminus1, tkminus1, tk)
+        
         shape = (6,1)
-        zk = np.zeros(shape)
-        zk = Wi * np.sum(Zk, axis=1)
+        Ybark = np.zeros(shape)
+        Ybark = Wi * np.sum(upsilon, axis=1)
         
-        #step 8: cross-covariance matrix
+        
+        #step 7: cross-covariance matrix
         shape = (6,1)
         Zzk = np.zeros(shape) #initialise
         
         for i in range (nx):
-            Zzk[:, i+1] = Zk[:,i] - zk
+            Zzk[:, i+1] = upsilon[:,i] - Ybark
         
         lbdak = 1/xi * Zzk
         
-        SRk = np.linalg.cholesky(Rk, lower=true)
-        Szz = np.linalg.lu([lbdak SRk])
+        SRk = np.linalg.cholesky(Rk, lower = True)
+        Szz = np.linalg.lu([lbdak, SRk])
         
-        gammak == lbda #for convention sake
-        
-        yk = np.linalg.subtract(zk, xk) #residual
+        gammak = lbda #for convention sake
         
         dem = np.zeros(shape)
         for i in range (nx):
-            dem[:, i+1] = Zk[:, i+1] - zk[:, i+1]
+            dem[:, i+1] = upsilon[:, i+1] - Ybark
+        
+        Yk = XREF[i+1]
+        yk = Yk - Ybark #residual
         
         lbda0knum = np.trace(yk @ np.transpose(yk))
         lbda0kdem = np.trace(np.linalg.sum(Wi*dem @ np.transpose(dem)))
@@ -130,22 +140,24 @@ def run_square_root_CKF(XREF, tk, Rk, Qd):
         #adaptive fading factor - reduces impact of disturbance
         if lbda0k < 1:
             alphak = lbda0k
-            else:
+        else:
                 alphak = 1
         
         PKk = 1/alphak * (gammak @ np.transpose(lbdak))
         
-        #step 9: filter gain
+        
+        #step 8: filter gain
         Kk =(PKk @ np.linalg.inv(np.transpose(Szz))) @ np.linalg.inv(Szz)
         
-        Xhatk = xk + Kk @ np.subtract(Yk, zk) #final state estimation k
+        Xkfinal = xhat + Kk @ np.subtract(Yk, Ybark) #final state estimation k
         Sk = np.linalg.lu([(gammak-Kk@lbdak) (Kk@SRk)]) #square root of covariance (final)
         
          
         #repeat for next observation
         #need to store data in an array such that the filter and the truth data can be plotted against each other
         
-        filter_results[i] = Xhatk
+        filter_results[i] = Xkfinal
         covariance_results[i] = Sk @ Sk
         
     return filter_results, covariance_results
+

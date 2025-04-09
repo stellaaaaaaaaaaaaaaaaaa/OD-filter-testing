@@ -60,13 +60,13 @@ def run_cubature_kalman_filter(XREF, tk, Rk, Qd):
         xk = np.zeros(shape) #initialise
         xk = np.sum(xkcub, axis=1)
         
-        Pksigma = np.zeros((nx, 2*nx+1))
+        Pkcub = np.zeros((nx, 2*nx+1))
         for i in range(2*nx):
-            Pksigma[:, i] = np.dot(np.subtract(xkcub[:, i]/Wi, xk), np.transpose(np.subtract(xkcub[:, i]/Wi, xk))*Wi)
+            Pkcub[:, i] = np.dot(np.subtract(xkcub[:, i]/Wi, xk), np.transpose(np.subtract(xkcub[:, i]/Wi, xk))*Wi)
             
         shape = (6,1)
         Pk = np.zeros(shape) #initialise
-        Pk = np.sum(Pksigma, axis=1) + Qd
+        Pk = np.sum(Pkcub, axis=1) + Qd
         
         Prootnew = np.linalg.cholesky(Pk, lower=True)
         cub_matrix_new = np.zeros((nx, 2*nx+1)) #empty matrix
@@ -74,10 +74,10 @@ def run_cubature_kalman_filter(XREF, tk, Rk, Qd):
         cub_matrix_new[:, 0] = xk
         
         for i in range(nx):
-            cub_matrix_new[:, i] = xk + np.sqrt(nx)*Prootnew
+            cub_matrix_new[:, i] = xk + np.sqrt(nx)*Prootnew[:,i]
             
         for i in range(nx):
-            cub_matrix_new[:, i+nx] = xk - np.sqrt(nx)*Prootnew
+            cub_matrix_new[:, i+nx] = xk - np.sqrt(nx)*Prootnew[:,i]
         
         
         #step 7: predicted measurement
