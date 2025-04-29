@@ -17,4 +17,4 @@ This interface lastly generates visualisation and error plots for direct compari
 It should also be noted that currently points are propagated via the circular restricted three-body problem equations (CR3BP), however, it is desired that a propagator should be integrated into the program. 
 
 This project is largely developed using the HALO propagator, link to GitHub repositary here: [High-precision-Analyser-of-Lunar-Orbits](https://github.com/yang-researchgroup/High-precision-Analyser-of-Lunar-Orbits). 
-Ensure that you download de430.bsp and put it in the main folder. (https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/)
+Ensure that you download de430.bsp and put it in the main folder and the visualisation processes, input folder. (https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/)
