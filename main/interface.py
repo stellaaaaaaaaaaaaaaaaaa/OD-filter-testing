@@ -13,6 +13,7 @@ from CKF import run_cubature_kalman_filter
 from SRCKF import run_square_root_CKF
 from USKF import run_unscented_schmidt_KF
 from UKF import run_unscented_kalman_filter
+from DSNSim import generate_DSNSim_from_truth
 #from hybrid import run_hybrid
 
 start_time = time.time()
@@ -33,8 +34,8 @@ tk = tkreduced[:200]
 
 #set noise here https://ntrs.nasa.gov/api/citations/20200011550/downloads/20200011550.pdf
 
-#convert to XREF by adding measurement noise:
-#set measurement bias (systematic), select arbitrarily
+# #convert to XREF by adding measurement noise:
+# #set measurement bias (systematic), select arbitrarily
 rangebias_std = 7.5e-3 #kilometres
 velocity_bias_std = 2.5e-7 #range rate mesasurement bias
 
@@ -48,18 +49,20 @@ Rk[:3, :3] *= rangenoise_std**2  # Position noise
 Rk[3:, 3:] *= velocity_noise_std**2  # Velocity noise
 
 
-#generate one bias value per component
-bias = np.zeros((1, 6))  # One bias vector for all time steps
-bias[0, :3] = np.random.normal(0, rangebias_std, 3)  # Position biases
-bias[0, 3:] = np.random.normal(0, velocity_bias_std, 3)  # Velocity biases
+# #generate one bias value per component
+# bias = np.zeros((1, 6))  # One bias vector for all time steps
+# bias[0, :3] = np.random.normal(0, rangebias_std, 3)  # Position biases
+# bias[0, 3:] = np.random.normal(0, velocity_bias_std, 3)  # Velocity biases
 
-# Generate random noise (different for each time step and component)
-noise = np.zeros_like(Xtruth)
-noise[:, :3] = np.random.normal(0, rangenoise_std, (Xtruth.shape[0], 3))  # Position noise
-noise[:, 3:] = np.random.normal(0, velocity_noise_std, (Xtruth.shape[0], 3))  # Velocity noise
+# # Generate random noise (different for each time step and component)
+# noise = np.zeros_like(Xtruth)
+# noise[:, :3] = np.random.normal(0, rangenoise_std, (Xtruth.shape[0], 3))  # Position noise
+# noise[:, 3:] = np.random.normal(0, velocity_noise_std, (Xtruth.shape[0], 3))  # Velocity noise
 
-#generate measurement data by incorporating bias and noise
-XREF = Xtruth + bias + noise  # convert truth to measurement
+# #generate measurement data by incorporating bias and noise
+# XREF = Xtruth + bias + noise  # convert truth to measurement
+
+XREF = generate_DSNSim_from_truth(Xtruth, tk)
 
 #set small value for initialised covariance
 initial_covar = 0.1
@@ -94,11 +97,11 @@ Pcc = c = np.array([ #consider parameter covariance, take variance
 #select filter to run here
 
 #1 to run, 0 to skip
-run_EKF = 0
+run_EKF = 1
 run_CKF = 0
 run_SRCKF = 0
 run_USKF = 0
-run_UKF = 1
+run_UKF = 0
 
 
 # #select hybridisation here
