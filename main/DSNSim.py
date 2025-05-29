@@ -118,7 +118,7 @@ def generate_DSNSim_from_truth(truth_data, tk):
     Goldstone_ECI_state[:, 0:3] = Goldstone_ECI_coord  
     Goldstone_ECI_state[:, 3:6] = Goldstone_ECI_velocity  
     
-    #Convert truth data MCF (moon centred inertial frame) --> ECI
+    #Convert truth data BRF (moon centred inertial frame) --> ECI
     
     def MCF_to_ECI(coordinates, time):
         
@@ -135,7 +135,7 @@ def generate_DSNSim_from_truth(truth_data, tk):
         for i in range(len(coordinates)):
             
             et = time[i]
-            Earth_State = spice.spkezr('301', et, 'J2000', 'NONE', '399')[0]
+            Earth_State = spice.spkezr('399', et, 'J2000', 'NONE', '301')[0]
             Earth_State_Data[i] = Earth_State
             
             EarthPositionData = Earth_State_Data[i, :3]
@@ -153,16 +153,12 @@ def generate_DSNSim_from_truth(truth_data, tk):
     
     for i in range(len(ECI_truth)):
         
-        #check equations, attach sources
-        Earth_radius = 6378 #km
-        
-        #check line of sight for each station
+        #check line of sight for each station via elevation angle
+        #elevation angle should be within bounds 0 --> 180
         #https://www.satnow.com/calculators/coverage-angle-of-a-satellite
         
         #determine satellite position relative to each ground station
         #i.e. ground station-to-satellite vector
-        
-        satellite_Earth_vector = ECI_truth[:, 0:3]
         
         Canberra_Satellite_Vector = ECI_truth[i, 0:3] - Canberra_ECI_state[i, 0:3]
         Madrid_Satellite_Vector = ECI_truth[i, 0:3] - Madrid_ECI_state[i, 0:3]
@@ -176,42 +172,16 @@ def generate_DSNSim_from_truth(truth_data, tk):
         Canberra_Earth_mag = np.linalg.norm(Canberra_ECI_state[i, 0:3])
         Madrid_Earth_mag = np.linalg.norm(Madrid_ECI_state[i, 0:3])
         Goldstone_Earth_mag = np.linalg.norm(Goldstone_ECI_state[i, 0:3])
-        
-        #line of sight- is the Earth blocking the vector between the ground station and the satellite?
-        #determine projection vectors (Earth-to-station onto station-to-satellite)
-        
-        proj_C_parameter = -np.dot(Earth_Canberra_Vector, Canberra_Satellite_Vector)/np.dot(Canberra_Satellite_Vector, Canberra_Satellite_Vector)
-        proj_M_parameter = -np.dot(Earth_Madrid_Vector, Madrid_Satellite_Vector)/np.dot(Madrid_Satellite_Vector, Madrid_Satellite_Vector)
-        proj_G_parameter = -np.dot(Earth_Goldstone_Vector, Goldstone_Satellite_Vector)/np.dot(Goldstone_Satellite_Vector, Goldstone_Satellite_Vector)
-        
-        proj_C = proj_C_parameter * Canberra_Satellite_Vector
-        proj_M = proj_M_parameter * Madrid_Satellite_Vector
-        proj_G = proj_G_parameter * Goldstone_Satellite_Vector
-        
-        #projection values should be positive --> if projection = negative, no Earth blockage
-        if 0 <= proj_C_parameter <= 1:
-            closest_point_C = Earth_Canberra_Vector + proj_C
-            closest_p_dist_C = np.linalg.norm(closest_point_C)
-        else:
-            closest_p_dist_C = 6700 #random number definitely over limit
     
-        if 0 <= proj_M_parameter <= 1:
-            closest_point_M = Earth_Madrid_Vector + proj_M
-            closest_p_dist_M = np.linalg.norm(closest_point_M)
-        else:
-            closest_p_dist_M = 6700
-            
-        if 0 <= proj_G_parameter <= 1:
-            closest_point_G = Earth_Goldstone_Vector + proj_G
-            closest_p_dist_G = np.linalg.norm(closest_point_G)
-        else:
-            closest_p_dist_G = 6700
-            
-        
+        Canberra_Satellite_distance = np.linalg.norm(Canberra_Satellite_Vector)    
+        Madrid_Satellite_distance = np.linalg.norm(Madrid_Satellite_Vector)    
+        Goldstone_Satellite_distance = np.linalg.norm(Goldstone_Satellite_Vector)    
+    
         #determine elevation angle
         #https://www.satnow.com/calculators/coverage-angle-of-a-satellite - see image
         
-        elevation_mask = np.deg2rad(5) #elevation angle must be greater than 10 deg
+        elevation_mask = np.deg2rad(10) #elevation angle must be greater than 10 deg
+        negative_em = np.deg2rad(-170+90) #elevation angle must be greater than 10 deg in the opposite direction as well ie -170 or -80 deg from the zenith
         #https://ipnpr.jpl.nasa.gov/2000-2009/progress_report/42-160/160A.pdf
         
         #angles between horizon and satellite to ground vector
@@ -223,15 +193,15 @@ def generate_DSNSim_from_truth(truth_data, tk):
         elevation_M = np.pi/2 - np.arccos(cos_M) 
         elevation_G = np.pi/2 - np.arccos(cos_G) 
 
-        Canberra_values = [Canberra_Earth_mag, elevation_C, closest_p_dist_C]
-        Madrid_values = [Madrid_Earth_mag, elevation_M, closest_p_dist_M]
-        Goldstone_values = [Goldstone_Earth_mag, elevation_G, closest_p_dist_G]
+        Canberra_values = [Canberra_Earth_mag, elevation_C, Canberra_Satellite_distance]
+        Madrid_values = [Madrid_Earth_mag, elevation_M, Madrid_Satellite_distance]
+        Goldstone_values = [Goldstone_Earth_mag, elevation_G, Goldstone_Satellite_distance]
         
         visible_stations = []
-        station_data = [(Canberra_values, closest_p_dist_C), (Madrid_values, closest_p_dist_M), (Goldstone_values, closest_p_dist_G)]
+        station_data = [Canberra_values, Madrid_values, Goldstone_values]
         
-        for j, (values, line_of_sight_dist) in enumerate(station_data):
-            if line_of_sight_dist > Earth_radius and values[1] > elevation_mask:
+        for j, (values) in enumerate(station_data):
+            if values[1] > elevation_mask or values[1] > negative_em:
                 visible_stations.append((j, values[2]))  # (station_index, station_to_satellite_distance)
 
         if not visible_stations:
@@ -250,15 +220,12 @@ def generate_DSNSim_from_truth(truth_data, tk):
         
         #generate range and range rate data --> !! convert to individual values
         
-        DSN_sim_coord = np.zeros_like(truth_data) #initialise empty array
-        
         DSN_sim_range = ECI_truth[i, 0:3] - best_station_values[i, 0:3]
         
         range_bias = np.random.normal(0, 7.5/1000/3, DSN_sim_range.shape) # m to km
         range_noise = np.random.normal(0, 3/1000/3, DSN_sim_range.shape) # m to km
         
         DSN_sim_range = DSN_sim_range + range_bias + range_noise
-        DSN_sim_coord[:, 0:3] = DSN_sim_range  
         
         DSN_sim_range_rate = ECI_truth[i, 3:6] - best_station_values[i, 3:6]
         
@@ -267,18 +234,12 @@ def generate_DSNSim_from_truth(truth_data, tk):
         
         DSN_sim_range_rate = DSN_sim_range_rate + range_rate_bias + range_rate_noise
         
-        # Store valid measurement
         DSN_measurement = np.concatenate([DSN_sim_range, DSN_sim_range_rate])
         DSN_sim_coord.append(DSN_measurement)
         visible_indices.append(i)
 
     # Convert to final reference trajectory (only visible states)
     DSN_sim_coord = np.array(DSN_sim_coord)
-    
-    if DSN_sim_coord == []:
-        
-        print("no visible stations for any states")
-        return
     
     
     def ECI_to_BRF(coordinates, time):
@@ -334,5 +295,3 @@ def generate_DSNSim_from_truth(truth_data, tk):
     DSN_Sim_Data = ECI_to_BRF(DSN_sim_coord, tk)
     
     return DSN_Sim_Data  
- 
-    
