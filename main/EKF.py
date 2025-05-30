@@ -1,6 +1,6 @@
 # Extended Kalman Filter (EKF) Algorithm - Improved Implementation
 
-def run_extended_kalman_filter(XREF, tk, Rk, Qd, initial_covar):
+def run_extended_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hydrid, H_criteria, stable):
 
     import numpy as np
     from CR3BP import NRHOmotion, STM
@@ -12,6 +12,7 @@ def run_extended_kalman_filter(XREF, tk, Rk, Qd, initial_covar):
     ekf_results = np.zeros_like(XREF)
     covariance_results = np.zeros((n_points, state_dim, state_dim))
     residual_results = np.zeros_like(XREF)
+    entropy_results = np.zeros(len(XREF))
     
     # Initialize first state with reference measurement
     ekf_results[0] = XREF[0].copy()
@@ -82,11 +83,22 @@ def run_extended_kalman_filter(XREF, tk, Rk, Qd, initial_covar):
         # Ensure updated covariance remains symmetric
         Pk = (Pk + Pk.T) / 2
         
+        #calculate entropy [important for hybrid implementation BUT may be used to compare results]
+        d = Pk.shape[0] #dimension of covariance matrix
+        H = 0.5 * np.log((2*np.pi*np.e) ** d * np.linalg.det(Pk))
+        
         # Store results
         ekf_results[i+1] = Xk
         covariance_results[i+1] = Pk
         residual_results[i+1] = zk - Hk @ Xk  # Post-update residual
+        entropy_results[i+1] = H
         
+        if is_it_hybrid == 1 and H > H_criteria:
+            print("entropy > criteria, stable region finished, swapping to unstable filter")
+            return (ekf_results[:i+2], covariance_results[:i+2], 
+                    residual_results[:i+2], entropy_results[:i+2])
+            return ekf_results, covariance_results, residual_results, entropy_results
+            
 
     print("EKF complete!")
-    return ekf_results, covariance_results, residual_results
+    return ekf_results, covariance_results, residual_results, entropy_results

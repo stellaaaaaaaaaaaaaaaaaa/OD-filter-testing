@@ -3,7 +3,7 @@
 #more complex
 #more likely to perform well for the more unstable parts of the NRHO
 
-def run_unscented_kalman_filter(XREF, tk, Rk, Qd, initial_covar):
+def run_unscented_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H_criteria):
   
     import numpy as np
     import time
@@ -17,6 +17,7 @@ def run_unscented_kalman_filter(XREF, tk, Rk, Qd, initial_covar):
     ukf_results = np.zeros_like(XREF)
     covariance_results = np.zeros((len(XREF), state_dim, state_dim))
     residual_results = np.zeros_like(XREF)
+    entropy_results = np.zeros(len(XREF))
     
     # Initialize first state with reference measurement
     ukf_results[0] = XREF[0]
@@ -187,9 +188,14 @@ def run_unscented_kalman_filter(XREF, tk, Rk, Qd, initial_covar):
             max_cov_value = 1e6  # Adjust based on your system scale
             P_updated = np.minimum(P_updated, max_cov_value)
             
+            #calculate entropy [important for hybrid implementation BUT may be used to compare results]
+            d = P_updated.shape[0] #dimension of covariance matrix
+            H = 0.5 * np.log((2*np.pi*np.e) ** d * np.linalg.det(P_updated))
+            
             ukf_results[k+1] = x_updated
             covariance_results[k+1] = P_updated
             residual_results[k+1] = innovation
+            entropy_results[k+1] = H
             
         except Exception as exc:
             import traceback
@@ -203,8 +209,14 @@ def run_unscented_kalman_filter(XREF, tk, Rk, Qd, initial_covar):
             ukf_results[k+1] = ukf_results[k]
             covariance_results[k+1] = covariance_results[k]
             residual_results[k+1] = np.zeros(state_dim)
+            
+        if is_it_hybrid == 1 and H > H_criteria:
+            print("entropy > criteria, stable region finished, swapping to unstable filter")
+            return (ukf_results[:k+2], covariance_results[:k+2], 
+                    residual_results[:k+2], entropy_results[:k+2])
+            return ukf_results, covariance_results, residual_results, entropy_results
     
-    return ukf_results, covariance_results, residual_results
+    return ukf_results, covariance_results, residual_results, entropy_results
 
 # #Unscented Kalman Filter (UKF) Algorithm
 

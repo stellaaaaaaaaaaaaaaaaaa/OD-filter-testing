@@ -8,7 +8,7 @@
 #more likely to perform well for the more unstable parts of the NRHO
 #Cubature Kalman Filter with NRHO-specific improvements
 
-def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar):
+def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H_criteria):
     
     import numpy as np
     import time
@@ -21,6 +21,7 @@ def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar):
     ckf_results = np.zeros_like(XREF)
     covariance_results = np.zeros((len(XREF), state_dim, state_dim))
     residual_results = np.zeros_like(XREF)
+    entropy_results = np.zeros(len(XREF))
     
     # Initialize first state with reference measurement
     ckf_results[0] = XREF[0]
@@ -135,6 +136,10 @@ def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar):
             # Ensure covariance remains symmetric
             P_updated = (P_updated + P_updated.T) / 2
             
+            #calculate entropy [important for hybrid implementation BUT may be used to compare results]
+            d = P_updated.shape[0] #dimension of covariance matrix
+            H = 0.5 * np.log((2*np.pi*np.e) ** d * np.linalg.det(P_updated))
+            
             # Eigenvalue check and correction
             eigvals = linalg.eigvalsh(P_updated)
             if np.any(eigvals < 1e-8):
@@ -147,6 +152,7 @@ def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar):
             ckf_results[k+1] = x_updated
             covariance_results[k+1] = P_updated
             residual_results[k+1] = innovation
+            entropy_results[k+1] = H
             
         except Exception as exc:
             import traceback
@@ -160,8 +166,14 @@ def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar):
             ckf_results[k+1] = ckf_results[k]
             covariance_results[k+1] = covariance_results[k]
             residual_results[k+1] = np.zeros(nx)
+            
+        if is_it_hybrid == 1 and H > H_criteria:
+            print("entropy > criteria, stable region finished, swapping to unstable filter")
+            return (ckf_results[:k+2], covariance_results[:k+2], 
+                    residual_results[:k+2], entropy_results[:k+2])
+            return ckf_results, covariance_results, residual_results, entropy_results
     
-    return ckf_results, covariance_results, residual_results
+    return ckf_results, covariance_results, residual_results, entropy_results
 
 # #Cubature Kalman Filter
 
