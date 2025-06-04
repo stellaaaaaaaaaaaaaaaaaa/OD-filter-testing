@@ -52,7 +52,7 @@ def STM(XREFk, dt):
     
     # Start timing the operation
     start_time = time.time()
-    max_time = 10  # Maximum time for STM calculation
+    max_time = 5.0  # Maximum time for STM calculation
     
     x, y, z = XREFk[0], XREFk[1], XREFk[2]
     
