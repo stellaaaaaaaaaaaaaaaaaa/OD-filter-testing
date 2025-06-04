@@ -14,7 +14,17 @@ An additional hybridisation option is also included which allows any of the afor
 
 This interface lastly generates visualisation and error plots for direct comparison between the truth trajectory and filter results.
 
-It should also be noted that currently points are propagated via the circular restricted three-body problem equations (CR3BP), however, it is desired that a propagator should be integrated into the program. 
+Note that the HALO propagator has now been integrated into the program, and that propagation no longer relies on CR3BP modelling. 
 
-This project is largely developed using the HALO propagator, link to GitHub repositary here: [High-precision-Analyser-of-Lunar-Orbits](https://github.com/yang-researchgroup/High-precision-Analyser-of-Lunar-Orbits). Make sure to download this project and copy the 'Python' folder into the main folder.
-Ensure that you download de430.bsp and put it in the main folder and the visualisation processes, input folder. (https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/)
+This project is largely developed using the HALO propagator, link to GitHub repositary here: [High-precision-Analyser-of-Lunar-Orbits](https://github.com/yang-researchgroup/High-precision-Analyser-of-Lunar-Orbits). 
+
+There are additional files required to be installed before running this tool. Firstly, run:
+pip install -r requirements.txt
+This will install the dependencies listed in the text file. 
+
+Secondly, de430.bsp must be downloaded  (download here: https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/) and installed into multiple locations:
+- the main folder 'RUN HERE'
+- input
+- ker
+- visualisation processes
+- visualisation processes --> input
