@@ -8,36 +8,52 @@
 #more likely to perform well for the more unstable parts of the NRHO
 #Cubature Kalman Filter with NRHO-specific improvements
 
-def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H_criteria):
+def run_cubature_kalman_filter(Xtruth, X_initial, DSN_Sim_measurements, ground_station_state, tk, Rk, Qd, initial_covar, is_it_hybrid, H_criteria, stable):
     
     import numpy as np
     import time
     from scipy import linalg
-    from CR3BP import NRHOmotion
+    from pointprop import point_propagation
+    from Hk import compute_Hk
     
     # Set up empty arrays to store filter results
     state_dim = 6  # Should be 6 (position and velocity)
     
-    ckf_results = np.zeros_like(XREF)
-    covariance_results = np.zeros((len(XREF), state_dim, state_dim))
-    residual_results = np.zeros_like(XREF)
-    entropy_results = np.zeros(len(XREF))
+    ckf_results = np.zeros_like(Xtruth)
+    covariance_results = np.zeros((len(Xtruth), state_dim, state_dim))
+    residual_results = np.zeros((len(Xtruth), 2))
+    entropy_results = np.zeros(len(Xtruth))
     
     # Initialize first state with reference measurement
-    ckf_results[0] = XREF[0]
-    covariance_results[0] = np.eye(state_dim) * initial_covar
+    ckf_results[0] = X_initial
+    
+    if isinstance(initial_covar, np.ndarray) and initial_covar.shape == (6, 6):
+        # initial_covar is already a full covariance matrix from previous filter
+        covariance_results[0] = initial_covar
+    else:
+        # Do normal initialization for scalar initial_covar
+        P0 = np.eye(6)
+        P0[:3, :3] *= initial_covar**2
+        P0[3:, 3:] *= initial_covar/1000**2
+        covariance_results[0] = P0
     
     # Cubature parameters
     nx = state_dim
-    xi = np.sqrt(nx)  # Standard scaling factor for cubature points
+    xi = 0.5*np.sqrt(nx)  # Standard scaling factor for cubature points
     num_points = 2 * nx  # Total number of cubature points
     weight = 1.0 / num_points  # Equal weights for all points
     
     print(f"CKF - Starting filter with {num_points} cubature points")
     
-    # Modified loop to iterate through all measurements
-    for k in range(len(XREF) - 1):
-        print(f"CKF - Processing time step {k}/{len(XREF)-2}")
+    for k in range(len(Xtruth) - 1):
+        print(f"CKF - Processing time step {k}/{len(Xtruth)-1}")
+        
+        if k+1 >= len(DSN_Sim_measurements):
+            print(f"ERROR: Would access DSN_Sim_measurements[{k+1}] but length is {len(DSN_Sim_measurements)}")
+            break
+        if k+1 >= len(ground_station_state):
+            print(f"ERROR: Would access ground_station_state[{k+1}] but length is {len(ground_station_state)}")
+            break
         
         try:
             # Step 1: initialization (a priori)
@@ -78,7 +94,7 @@ def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H_
             for j in range(num_points):
                 # Propagate this cubature point
                 try:
-                    prop_cubature_points[j] = NRHOmotion(cubature_points[j], tkminus1, tk_next)
+                    prop_cubature_points[j] = point_propagation(cubature_points[j], tkminus1, tk_next)
                     
                     # Check for non-finite values after propagation
                     if not np.all(np.isfinite(prop_cubature_points[j])):
@@ -94,10 +110,37 @@ def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H_
             
             # Step 5: Compute predicted state and covariance
             
-            x_pred = np.zeros(nx)
+            x_pred = np.zeros(6) 
+            
             for j in range(num_points):
                 x_pred += weight * prop_cubature_points[j]
             
+            x_pred_pos = x_pred[0:3] - ground_station_state[k+1, 0:3]
+            x_pred_vel = x_pred[3:6] - ground_station_state[k+1, 3:6]
+            
+            cub_point_measurements = np.zeros((num_points, 2)) 
+            
+            for j in range(num_points):
+                
+                position = prop_cubature_points[j, 0:3] - ground_station_state[k+1, 0:3]       
+                velocity = prop_cubature_points[j, 3:6] - ground_station_state[k+1, 3:6] 
+            
+                prop_range = np.linalg.norm(position)
+                prop_range_rate = np.dot(position, velocity) / np.linalg.norm(position) 
+            
+                cub_point_measurements[j] = np.array([prop_range, prop_range_rate])
+            
+            expected_meas = np.zeros(2)
+            position = np.zeros(6)
+            velocity = np.zeros(6)
+            
+            for j in range(num_points):
+                expected_meas += weight * cub_point_measurements[j]
+                
+            y_pred = expected_meas
+            y_pred_range, y_pred_range_rate = y_pred
+            
+
             # Predicted covariance
             P_pred = np.zeros((nx, nx))
             for j in range(num_points):
@@ -108,19 +151,35 @@ def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H_
             P_pred += Qd
             
             # Step 6: Measurement update
-            yk = XREF[k+1] # Current measurement
+            yk = np.array(DSN_Sim_measurements[k+1]) # Current range and range rate measurement
             
-            # Predicted measurement (identity measurement model)
-            y_pred = x_pred
+            # Predicted measurement
+            y_pred = expected_meas
             
             # Innovation
             innovation = yk - y_pred
             
-            # Innovation covariance
-            Pyy = P_pred + Rk
+            innovation_norm = np.linalg.norm(innovation)
+            if innovation_norm > 5.0:  # threshold in km
+                print("Large innovation detected - possible divergence")
             
+            # Innovation covariance
+            #Pyy = P_pred + Rk
+            Pyy = np.zeros((2, 2))
+            for j in range(num_points):
+                diff_meas = cub_point_measurements[j] - y_pred
+                Pyy += weight * np.outer(diff_meas, diff_meas)
+
+            Pyy += Rk
+        
+        
             # Cross-correlation matrix
-            Pxy = P_pred  # Simplified for direct observation
+            #Pxy = P_pred  
+            Pxy = np.zeros((nx, 2))  # 6x2 matrix
+            for j in range(num_points):
+                diff_state = prop_cubature_points[j] - x_pred
+                diff_meas = cub_point_measurements[j] - y_pred
+                Pxy += weight * np.outer(diff_state, diff_meas)
             
             # Kalman gain
             Kk = Pxy @ linalg.inv(Pyy)
@@ -129,16 +188,16 @@ def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H_
             x_updated = x_pred + Kk @ innovation
 
             
-            # Update covariance via Joseph form (better stability)
-            I = np.eye(nx)
-            P_updated = (I - Kk) @ P_pred @ (I - Kk).T + Kk @ Rk @ Kk.T
+            # Update covariance  
+            P_updated = P_pred - Kk @ Pxy.T #RMSE = 12.15km 
             
             # Ensure covariance remains symmetric
             P_updated = (P_updated + P_updated.T) / 2
             
             #calculate entropy [important for hybrid implementation BUT may be used to compare results]
             d = P_updated.shape[0] #dimension of covariance matrix
-            H = 0.5 * np.log((2*np.pi*np.e) ** d * np.linalg.det(P_updated))
+            logval = (2*np.pi*np.e) ** d * np.linalg.det(P_updated)
+            H = 0.5 * np.log(abs(logval)) 
             
             # Eigenvalue check and correction
             eigvals = linalg.eigvalsh(P_updated)
@@ -152,7 +211,7 @@ def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H_
             ckf_results[k+1] = x_updated
             covariance_results[k+1] = P_updated
             residual_results[k+1] = innovation
-            entropy_results[k+1] = H
+            entropy_results[k+1] = abs(H)
             
         except Exception as exc:
             import traceback
@@ -165,10 +224,16 @@ def run_cubature_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H_
             print(f"  Using fallback: copying previous state")
             ckf_results[k+1] = ckf_results[k]
             covariance_results[k+1] = covariance_results[k]
-            residual_results[k+1] = np.zeros(nx)
+            residual_results[k+1] = np.zeros(2)
             
-        if is_it_hybrid == 1 and H > H_criteria:
+        if is_it_hybrid == 1 and abs(H) > H_criteria and stable == 1:
             print("entropy > criteria, stable region finished, swapping to unstable filter")
+            return (ckf_results[:k+2], covariance_results[:k+2], 
+                    residual_results[:k+2], entropy_results[:k+2])
+            return ckf_results, covariance_results, residual_results, entropy_results
+        
+        if is_it_hybrid == 1 and abs(H) < H_criteria and stable == 0:
+            print("entropy < criteria, unstable region finished, swapping to stable filter")
             return (ckf_results[:k+2], covariance_results[:k+2], 
                     residual_results[:k+2], entropy_results[:k+2])
             return ckf_results, covariance_results, residual_results, entropy_results

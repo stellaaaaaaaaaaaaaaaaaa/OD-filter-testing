@@ -1,27 +1,35 @@
-#Unscented Kalman Filter (UKF) Algorithm
+#Unscented Kalman Filter (UKF) Algorithm - Corrected Version
 
-#more complex
-#more likely to perform well for the more unstable parts of the NRHO
-
-def run_unscented_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H_criteria):
+def run_unscented_kalman_filter(Xtruth, X_initial, DSN_Sim_measurements, ground_station_state, tk, Rk, Qd, initial_covar, is_it_hybrid, H_criteria, stable):
   
     import numpy as np
     import time
     from scipy import linalg
-    from CR3BP import NRHOmotion
+    from pointprop import point_propagation
+    from Hk import compute_Hk
     
 
     # Set up empty arrays to store filter results
     state_dim = 6  # Should be 6 (position and velocity)
     
-    ukf_results = np.zeros_like(XREF)
-    covariance_results = np.zeros((len(XREF), state_dim, state_dim))
-    residual_results = np.zeros_like(XREF)
-    entropy_results = np.zeros(len(XREF))
+    ukf_results = np.zeros_like(Xtruth)
+    covariance_results = np.zeros((len(Xtruth), state_dim, state_dim))
+    residual_results = np.zeros((len(Xtruth), 2))
+    entropy_results = np.zeros(len(Xtruth))
     
     # Initialize first state with reference measurement
-    ukf_results[0] = XREF[0]
-    covariance_results[0] = np.eye(state_dim) * initial_covar
+    ukf_results[0] = X_initial
+    
+    if isinstance(initial_covar, np.ndarray) and initial_covar.shape == (6, 6):
+        # initial_covar is already a full covariance matrix from previous filter
+        covariance_results[0] = initial_covar
+    else:
+        # Do normal initialization for scalar initial_covar
+        P0 = np.eye(6)
+        P0[:3, :3] *= initial_covar**2
+        P0[3:, 3:] *= initial_covar/1000**2
+        covariance_results[0] = P0
+
     
     # Unscented transform parameters
     L = state_dim
@@ -45,9 +53,8 @@ def run_unscented_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H
     Wc = np.ones(2*L + 1) * Wic
     Wc[0] = W0c
     
-    # Modified loop to iterate through all measurements
-    for k in range(len(XREF) - 1):
-        print(f"UKF - Processing time step {k}/{len(XREF)-2}")
+    for k in range(len(Xtruth) - 1):
+        print(f"UKF - Processing time step {k}/{len(Xtruth)-2}")
         
         try:
             # Step 1: initialization (a priori)
@@ -85,7 +92,7 @@ def run_unscented_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H
             
             for j in range(2*L + 1):
                 try:
-                    prop_sigma_points[j] = NRHOmotion(sigma_points[j], tkminus1, tk_next)
+                    prop_sigma_points[j] = point_propagation(sigma_points[j], tkminus1, tk_next)
                     
                     # Check for non-finite values after propagation
                     if not np.all(np.isfinite(prop_sigma_points[j])):
@@ -105,6 +112,9 @@ def run_unscented_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H
             for j in range(2*L + 1):
                 x_pred += Wm[j] * prop_sigma_points[j]
             
+            x_pred_pos = x_pred[0:3] - ground_station_state[k+1, 0:3]
+            x_pred_vel = x_pred[3:6] - ground_station_state[k+1, 3:6]
+            
             # Predicted covariance
             P_pred = np.zeros((L, L))
             for j in range(2*L + 1):
@@ -114,47 +124,32 @@ def run_unscented_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H
             # Add process noise
             P_pred += Qd
             
-            # Step 6: Generate new sigma points
-            try:
-                # Add small regularisation term for numerical stability
-                regularised_Pk = P_pred + np.eye(L) * 1e-8  
-                sqrt_Pk = linalg.cholesky(regularised_Pk, lower=True)
-            except linalg.LinAlgError:
-                print("  Warning: Cholesky decomposition failed for predicted covariance")
-                # Alternative: use eigendecomposition for better stability
-                eigvals, eigvecs = linalg.eigh(regularised_Pk)
-                # Ensure all eigenvalues are positive
-                eigvals = np.maximum(eigvals, 1e-8)  # Increased minimum eigenvalue
-                sqrt_Pk = eigvecs @ np.diag(np.sqrt(eigvals))
+            # Predicted measurement mean 
+            sigma_point_measurements = np.zeros((2*L+1, 2)) 
             
-            #generate new sigma points
-            new_sigma_points = np.zeros((2*L + 1, L))
-            new_sigma_points[0] = x_pred
+            for j in range(2*L+1):
+                position = prop_sigma_points[j, 0:3] - ground_station_state[k+1, 0:3]       
+                velocity = prop_sigma_points[j, 3:6] - ground_station_state[k+1, 3:6] 
             
-            for j in range(L):
-                new_sigma_points[j+1] = x_pred + gamma * sqrt_Pk[:, j]
-                new_sigma_points[j+L+1] = x_pred - gamma * sqrt_Pk[:, j]
+                prop_range = np.linalg.norm(position)
+                prop_range_rate = np.dot(position, velocity) / np.linalg.norm(position) 
             
-            # Step 7: Measurement prediction
-            # For direct state measurement, measurement function is identity
-            meas_points = np.zeros_like(new_sigma_points)
+                sigma_point_measurements[j] = np.array([prop_range, prop_range_rate])
             
-            for j in range(2*L + 1):
-                # Measurement is the same as state (identity measurement model)
-                meas_points[j] = new_sigma_points[j]
-            
-            # Predicted measurement mean
-            y_pred = np.zeros(L)
-            for j in range(2*L + 1):
-                y_pred += Wm[j] * meas_points[j]
+            expected_meas = np.zeros(2)
+            for j in range(2*L+1):
+                expected_meas += Wm[j] * sigma_point_measurements[j]
+                
+            y_pred = expected_meas
+            y_pred_range, y_pred_range_rate = y_pred
             
             # Step 8: Innovation covariance and cross-correlation
-            Pyy = np.zeros((L, L))
-            Pxy = np.zeros((L, L))
+            Pyy = np.zeros((2, 2))
+            Pxy = np.zeros((L, 2))
             
             for j in range(2*L + 1):
-                diff_y = meas_points[j] - y_pred
-                diff_x = new_sigma_points[j] - x_pred
+                diff_y = sigma_point_measurements[j] - y_pred
+                diff_x = prop_sigma_points[j] - x_pred
                 
                 Pyy += Wc[j] * np.outer(diff_y, diff_y)
                 Pxy += Wc[j] * np.outer(diff_x, diff_y)
@@ -166,36 +161,44 @@ def run_unscented_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H
             Kk = Pxy @ linalg.inv(Pyy)
 
             # Current measurement
-            yk = XREF[k+1]
+            yk = np.array(DSN_Sim_measurements[k+1])
             
             # Innovation
-            innovation = yk - y_pred
+            innovation = yk - y_pred  
             
             # final state
             x_updated = x_pred + Kk @ innovation
                 
-            P_updated = P_pred - Kk @ Pyy @ Kk.T
+            # 
+            P_updated = P_pred - Kk @ Pxy.T
+            
+            #P_updated = P_pred - Kk @ Pxy.T
+            
+            # I = np.eye(L)
+            # Hk = compute_Hk(x_pred_pos, x_pred_vel, y_pred_range, y_pred_range_rate)
+            # P_updated = (I - Kk @ Hk) @ P_pred @ (I - Kk @ Hk).T + Kk @ Rk @ Kk.T
+            
+            # Ensure covariance remains symmetric - ADDED like CKF
+            P_updated = (P_updated + P_updated.T) / 2
             
             # Eigenvalue check and correction
             eigvals = linalg.eigvalsh(P_updated)
             if np.any(eigvals < 1e-8):  
                 print("  Warning: Covariance has negative eigenvalues, applying correction")
                 eigvals, eigvecs = linalg.eigh(P_updated)
-                eigvals = np.maximum(eigvals, 1e-8)  # Increased minimum eigenvalue
+                eigvals = np.maximum(eigvals, 1e-8)  
                 P_updated = eigvecs @ np.diag(eigvals) @ eigvecs.T
             
-            # Limit maximum covariance values
-            max_cov_value = 1e6  # Adjust based on your system scale
-            P_updated = np.minimum(P_updated, max_cov_value)
             
             #calculate entropy [important for hybrid implementation BUT may be used to compare results]
             d = P_updated.shape[0] #dimension of covariance matrix
-            H = 0.5 * np.log((2*np.pi*np.e) ** d * np.linalg.det(P_updated))
+            logval = (2*np.pi*np.e) ** d * np.linalg.det(P_updated)
+            H = 0.5 * np.log(abs(logval)) 
             
             ukf_results[k+1] = x_updated
             covariance_results[k+1] = P_updated
             residual_results[k+1] = innovation
-            entropy_results[k+1] = H
+            entropy_results[k+1] = abs(H)
             
         except Exception as exc:
             import traceback
@@ -208,13 +211,17 @@ def run_unscented_kalman_filter(XREF, tk, Rk, Qd, initial_covar, is_it_hybrid, H
             print(f"  Using fallback: copying previous state")
             ukf_results[k+1] = ukf_results[k]
             covariance_results[k+1] = covariance_results[k]
-            residual_results[k+1] = np.zeros(state_dim)
+            residual_results[k+1] = np.zeros(2)  # CORRECTED: should be size 2, not L
             
-        if is_it_hybrid == 1 and H > H_criteria:
+        if is_it_hybrid == 1 and H > H_criteria and stable == 1:
             print("entropy > criteria, stable region finished, swapping to unstable filter")
             return (ukf_results[:k+2], covariance_results[:k+2], 
                     residual_results[:k+2], entropy_results[:k+2])
-            return ukf_results, covariance_results, residual_results, entropy_results
+        
+        if is_it_hybrid == 1 and H < H_criteria and stable == 0:
+            print("entropy < criteria, unstable region finished, swapping to stable filter")
+            return (ukf_results[:k+2], covariance_results[:k+2], 
+                    residual_results[:k+2], entropy_results[:k+2])
     
     return ukf_results, covariance_results, residual_results, entropy_results
 

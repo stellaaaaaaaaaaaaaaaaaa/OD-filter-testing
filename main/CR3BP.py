@@ -15,18 +15,22 @@ from scipy.integrate import solve_ivp
 from scipy.linalg import expm
 import time
 
-# Constants for Earth-Moon system
+# Constants for Earth-Moon system (UNCHANGED)
 EARTH_MASS = 5.9722e24  # kg
 MOON_MASS = 7.3477e22   # kg
 EARTH_MOON_DISTANCE = 384400.0  # km
 EARTH_MOON_PERIOD = 27.3 * 24 * 3600  # seconds (27.3 days)
 
-# constants
+# constants (UNCHANGED)
 MU = MOON_MASS / (EARTH_MASS + MOON_MASS)
-# Angular velocity of the rotating frame
+# Angular velocity of the rotating frame (UNCHANGED)
 OMEGA = 2 * np.pi / EARTH_MOON_PERIOD  # rad/s
 
-# Conversion functions between physical and normalised units
+# ADD: Gravitational parameters
+MU_EARTH = 3.986004418e5  # km³/s² 
+MU_MOON = 4.9048695e3     # km³/s²
+
+# Conversion functions between physical and normalised units (UNCHANGED)
 def metric_to_normalised_pos(pos_km):
     return pos_km / EARTH_MOON_DISTANCE
 
@@ -45,30 +49,112 @@ def normalised_to_metric_vel(vel_norm):
 def normalised_to_metric_time(time_norm):
     return time_norm / OMEGA
 
-# Counter for linear propagation fallbacks
+# Counter for linear propagation fallbacks (UNCHANGED)
 linear_prop_count = 0
 
+# ADD: Helper functions for inertial frame
+def get_earth_moon_positions_inertial(t):
+    """Get Earth and Moon positions in barycentric inertial frame"""
+    theta = OMEGA * t
+    
+    r_earth = np.array([
+        -MU * EARTH_MOON_DISTANCE * np.cos(theta),
+        -MU * EARTH_MOON_DISTANCE * np.sin(theta),
+        0.0
+    ])
+    
+    r_moon = np.array([
+        (1 - MU) * EARTH_MOON_DISTANCE * np.cos(theta),
+        (1 - MU) * EARTH_MOON_DISTANCE * np.sin(theta),
+        0.0
+    ])
+    
+    return r_earth, r_moon
+
+def transform_rotating_to_inertial(state_rotating_norm, t):
+    """Transform from rotating normalized to inertial physical coordinates"""
+    theta = OMEGA * t
+    cos_theta = np.cos(theta)
+    sin_theta = np.sin(theta)
+    
+    # Rotation matrix
+    R = np.array([
+        [cos_theta, -sin_theta, 0],
+        [sin_theta,  cos_theta, 0],
+        [0,         0,          1]
+    ])
+    
+    R_dot = OMEGA * np.array([
+        [-sin_theta, -cos_theta, 0],
+        [cos_theta,  -sin_theta, 0],
+        [0,          0,          0]
+    ])
+    
+    # Convert to physical units
+    pos_phys = state_rotating_norm[:3] * EARTH_MOON_DISTANCE
+    vel_phys = state_rotating_norm[3:] * (EARTH_MOON_DISTANCE * OMEGA)
+    
+    # Transform to inertial
+    pos_inertial = R @ pos_phys
+    vel_inertial = R @ vel_phys + R_dot @ pos_phys
+    
+    return np.concatenate([pos_inertial, vel_inertial])
+
+def transform_inertial_to_rotating(state_inertial, t):
+    """Transform from inertial physical to rotating normalized coordinates"""
+    theta = OMEGA * t
+    cos_theta = np.cos(theta)
+    sin_theta = np.sin(theta)
+    
+    # Inverse rotation matrix
+    R_inv = np.array([
+        [cos_theta,  sin_theta, 0],
+        [-sin_theta, cos_theta, 0],
+        [0,          0,         1]
+    ])
+    
+    R_dot_inv = OMEGA * np.array([
+        [-sin_theta, cos_theta, 0],
+        [-cos_theta, -sin_theta, 0],
+        [0,          0,          0]
+    ])
+    
+    pos_inertial = state_inertial[:3]
+    vel_inertial = state_inertial[3:]
+    
+    # Transform to rotating
+    pos_rotating = R_inv @ pos_inertial
+    vel_rotating = R_inv @ vel_inertial - R_dot_inv @ pos_inertial
+    
+    # Convert to normalized units
+    pos_norm = pos_rotating / EARTH_MOON_DISTANCE
+    vel_norm = vel_rotating / (EARTH_MOON_DISTANCE * OMEGA)
+    
+    return np.concatenate([pos_norm, vel_norm])
+
 def NRHOmotion(XREF0, tkminus1, tk):
+    """
+    MODIFIED: Now returns state in barycentric inertial frame
+    Uses existing rotating frame integration, then transforms output
+    """
 
     global linear_prop_count
     
     XREF0 = np.array(XREF0).flatten()
     
-    # Convert metric inputs to normalised units
-    x_norm = np.zeros_like(XREF0)
-    x_norm[:3] = metric_to_normalised_pos(XREF0[:3])
-    x_norm[3:] = metric_to_normalised_vel(XREF0[3:])
+    # NEW: Transform input from inertial to rotating normalized
+    x_norm = transform_inertial_to_rotating(XREF0, tkminus1)
     
-    # Convert times to normalised units
+    # Convert times to normalised units (UNCHANGED)
     t0_norm = metric_to_normalised_time(tkminus1)
     tf_norm = metric_to_normalised_time(tk)
     dt_norm = tf_norm - t0_norm
     
-    # For very small time steps, just return the initial state
+    # For very small time steps, just return the initial state (UNCHANGED)
     if abs(dt_norm) < 1e-10:
         return XREF0.copy()
     
-    # CR3BP equations of motion
+    # CR3BP equations of motion (UNCHANGED)
     def cr3bp_eqn(t, Y):
         """CR3BP equations of motion in normalized units"""
         x, y, z, xdot, ydot, zdot = Y
@@ -113,6 +199,7 @@ def NRHOmotion(XREF0, tkminus1, tk):
         return Ydot
 
     try:
+        # Integration in rotating frame (UNCHANGED)
         sol = solve_ivp(
             cr3bp_eqn,
             [0, dt_norm],
@@ -125,16 +212,15 @@ def NRHOmotion(XREF0, tkminus1, tk):
 
         if sol.success:
             result_norm = sol.y[:, -1]
-            result_metric = np.zeros_like(result_norm)
-            result_metric[:3] = normalised_to_metric_pos(result_norm[:3])
-            result_metric[3:] = normalised_to_metric_vel(result_norm[3:])
+            # NEW: Transform result from rotating normalized to inertial physical
+            result_inertial = transform_rotating_to_inertial(result_norm, tk)
             print("Non-linear propagation successful")
-            return result_metric
+            return result_inertial
 
     except Exception as e:
         print(f"Error with RK45: {str(e)}")
     
-    # If all integration methods failed, use linear propagation
+    # If all integration methods failed, use linear propagation (MOSTLY UNCHANGED)
     print("All integration methods failed, revert to fallback")
     
     # Linear propagation
@@ -151,19 +237,18 @@ def NRHOmotion(XREF0, tkminus1, tk):
         # Euler step in normalised units
         current_state += derivatives * tiny_dt
     
-    # Convert result back to metric units
-    result_phys = np.zeros_like(XREF0)
-    result_phys[:3] = normalised_to_metric_pos(current_state[:3])
-    result_phys[3:] = normalised_to_metric_vel(current_state[3:])
+    # NEW: Transform fallback result to inertial frame
+    result_inertial = transform_rotating_to_inertial(current_state, tk)
     
-    # Count this as a linear fallback
+    # Count this as a linear fallback (UNCHANGED)
     linear_prop_count += 1
     
-    # Only print occasionally to reduce output spam
+    # Only print occasionally to reduce output spam (UNCHANGED)
     if linear_prop_count % 10 == 0:
         print(f"fallback count: {linear_prop_count}")
     
-    return result_metric
+    return result_inertial  # CHANGED: was result_metric
+
 
 def STM(XREFk, dt):
 

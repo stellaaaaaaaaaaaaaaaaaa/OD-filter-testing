@@ -7,70 +7,82 @@ import spiceypy as sp
 #from mpl_toolkits.mplot3d import Axes3D
 from process import rotational, Model
 import time
+import pandas as pd
+import datetime
 
 from EKF import run_extended_kalman_filter
 from CKF import run_cubature_kalman_filter
 from SRCKF import run_square_root_CKF
 from USKF import run_unscented_schmidt_KF
 from UKF import run_unscented_kalman_filter
-from DSNSim import generate_DSNSim_from_truth
-#from hybrid import run_hybrid
+from hybrid import run_hybrid
+from DSNSim import DSN_generation
 
 start_time = time.time()
 #reference trajectory
 
-Xtruth = np.load("NRHOTruthPoints.npy") # x y z generated from HALO propagator
-#note, may choose to try to integrate HALO such that there is no need to manually save then call these points
-
-tk = np.load("Time.npy") #time data for each measurement
+#NRHOtruth = pd.read_csv('statesNRHOCapstone.csv')
+Xtruth = np.load('NRHOTruthPoints.npy')
+tk = np.load('Time.npy')
 
 #every hundredth value for filter debugging, comment/uncomment to utilise
-Xtruthreduced = Xtruth[::100]
-tkreduced = tk[::100]
+Xtruthreduced = Xtruth[0::50]
+tkreduced = tk[0::50]
 
-#remove NRHO departure, and shorten number of points for debugging, 450ish to get rid of that last part
-Xtruth = Xtruthreduced[:200]
-tk = tkreduced[:200]
+#remove NRHO departure --> this is where errors increase massively, skew RMSE results
+Xtruthshort = Xtruthreduced[0:900]
+tkshort = tkreduced[0:900]
+
+Xtruth = Xtruthshort
+tk = tkshort
 
 #set noise here https://ntrs.nasa.gov/api/citations/20200011550/downloads/20200011550.pdf
 
-# #convert to XREF by adding measurement noise:
 # #set measurement bias (systematic), select arbitrarily
-rangebias_std = 7.5e-3 #kilometres
-velocity_bias_std = 2.5e-7 #range rate mesasurement bias
+rangebias_std = 7.5e-3 #metres to kilometres 
+velocity_bias_std = 2.5e-6 #range rate mesasurement bias, mm/s to km/s
 
 #set measurement noise (random), select arbitrarily 
 rangenoise_std = 3e-3 #kilometres
-velocity_noise_std = 1e-7 #kilometers/sec (0.1mm/s), range rate noise
+velocity_noise_std = 1e-6 #kilometers/sec (0.1mm/s), range rate noise
 
-#measurement noise covariance 
-Rk = np.eye(6)
-Rk[:3, :3] *= rangenoise_std**2  # Position noise
-Rk[3:, 3:] *= velocity_noise_std**2  # Velocity noise
+#measurement noise covariance - reflect what the filter will realistically produce error wise - need to tune to anticipate such that the filter doesn't fail (Rk and Qd)
+#using identity matrix gives best results atm with steadily increasing error
+Rk = np.eye(2)
+scale = 7
+
+Rk[0,0] = (0.008*scale)**2  # 8m standard deviation  
+Rk[1,1] = (0.0027e-3*20)**2  # 2.7mm/s standard deviation
 
 
-# #generate one bias value per component
-# bias = np.zeros((1, 6))  # One bias vector for all time steps
-# bias[0, :3] = np.random.normal(0, rangebias_std, 3)  # Position biases
-# bias[0, 3:] = np.random.normal(0, velocity_bias_std, 3)  # Velocity biases
+#generate one bias value per component
+bias = np.zeros((1, 6))  # One bias vector for all time steps
+bias[0, :3] = np.random.normal(0, rangebias_std, 3)  # Position biases
+bias[0, 3:] = np.random.normal(0, velocity_bias_std, 3)  # Velocity biases
 
-# # Generate random noise (different for each time step and component)
-# noise = np.zeros_like(Xtruth)
-# noise[:, :3] = np.random.normal(0, rangenoise_std, (Xtruth.shape[0], 3))  # Position noise
-# noise[:, 3:] = np.random.normal(0, velocity_noise_std, (Xtruth.shape[0], 3))  # Velocity noise
+# Generate random noise (different for each time step and component)
+noise = np.zeros_like(bias)
+noise[:, :3] = np.random.normal(0, rangenoise_std, 3)  # Position noise
+noise[:, 3:] = np.random.normal(0, velocity_noise_std, 3)  # Velocity noise
 
-# #generate measurement data by incorporating bias and noise
-# XREF = Xtruth + bias + noise  # convert truth to measurement
+#generate measurement data by incorporating bias and noise
+X_initial = Xtruth[0] + bias.flatten() + noise.flatten() # convert truth to measurement
+X_initial = Xtruth[0] #will this reduce the spike?
 
-XREF = generate_DSNSim_from_truth(Xtruth, tk)
+#generating range and range rate measurements
+DSN_Sim_measurements, ground_station_state = DSN_generation(Xtruth, tk)
 
-#set small value for initialised covariance
-initial_covar = 0.1
+#set value for initialised covariance
+initial_covar = 1
 
 #process noise
+dt_debug = 1500 #every 100th value
+dt_current = tk[1]-tk[0]
+time_scale = np.sqrt(dt_current/dt_debug)
+
 Q = np.eye(6)  # process noise covariance matrix
-Q[:3, :3] *= 1e3  # Position process noise (smaller)
-Q[3:, 3:] *= 1e-2 # Velocity process noise (larger)
+Q[:3, :3] *= (0.1 * time_scale)**2  # Position process noise -- for EKF, it performs well at high values - suggests might be compensating for STM error
+Q[3:, 3:] *= (0.0001 * time_scale)**2  # Velocity process noise 
 GAMMA = np.eye(6)  # process noise mapping matrix
 Qd = GAMMA @ Q @ np.transpose(GAMMA)
 
@@ -97,32 +109,22 @@ Pcc = c = np.array([ #consider parameter covariance, take variance
 #select filter to run here
 
 #1 to run, 0 to skip
-run_EKF = 1
+run_EKF = 0
 run_CKF = 0
 run_SRCKF = 0
 run_USKF = 0
-run_UKF = 0
+run_UKF = 1
 
 
-# #select hybridisation here
+#select hybridisation here
 
-# #options: 'EKF-CKF', 'EKF-SRCKF', 'EKF-USKF', 'EKF-UKF'
-# #         'CKF-USKF', 'CKF-UKF'
+#options: 'EKF-CKF', 'EKF-SRCKF', 'EKF-USKF', 'EKF-UKF'
+#         'CKF-USKF', 'CKF-UKF'
 # #note 'stable-unstable' regions
-# hybridisation = 0
-# stable = 'EKF'
-# unstable = 'CKF'   
-
-# #set boundary conditions here
-# x1 = 
-# y1 =
-# z1 =
-# bc1 = np.array([x1 y1 z1])
-
-# x2 = 
-# y2 =
-# z2 = 
-# bc2 = np.array([x2 y2 z2])
+hybridisation = 0
+stable = 'EKF'
+unstable = 'CKF'   
+H_criteria = 33 #set upper limit of differential entropy before switching to the more intensive, yet more accurate filter
 
 
 #run filters
@@ -131,57 +133,69 @@ filter_results = {}
     
 if run_EKF:
     print("Running Extended Kalman Filter...")
-    ekf_results, covariance_results, residual_results = run_extended_kalman_filter(Xtruth, tk, Rk, Qd, initial_covar)
+    ekf_results, covariance_results, residual_results, entropy_results = run_extended_kalman_filter(Xtruth, X_initial, DSN_Sim_measurements, ground_station_state, tk, Rk, Qd, initial_covar, 0, H_criteria, 0)
     filter_results['EKF'] = {
         'states': ekf_results,
         'covariances': covariance_results, 
-        'residuals': residual_results
+        'residuals': residual_results,
+        'entropy': entropy_results
             }
     print("EKF complete!")
     
 if run_CKF:
     print("Running Cubature Kalman Filter...")
-    ckf_results, covariance_results, residual_results = run_cubature_kalman_filter(Xtruth, tk, Rk, Qd, initial_covar)
+    ckf_results, covariance_results, residual_results, entropy_results = run_cubature_kalman_filter(Xtruth, X_initial, DSN_Sim_measurements, ground_station_state, tk, Rk, Qd, initial_covar, 0, H_criteria, 0)
     filter_results['CKF'] = {
         'states': ckf_results,
         'covariances': covariance_results, 
-        'residuals': residual_results
+        'residuals': residual_results,
+        'entropy': entropy_results
             }
     print("CKF complete!")
     
 if run_SRCKF:
     print("Running Square Root Cubature Kalman Filter...")
-    srckf_results, covariance_results, residual_results = run_square_root_CKF(Xtruth, tk, Rk, Qd, initial_covar)
+    srckf_results, covariance_results, residual_results, entropy_results = run_square_root_CKF(Xtruth, X_initial, DSN_Sim_measurements, ground_station_state, tk, Rk, Qd, initial_covar, 0, H_criteria, 0)
     filter_results['SRCKF'] = {
         'states': srckf_results,
         'covariances': covariance_results, 
-        'residuals': residual_results
+        'residuals': residual_results,
+        'entropy': entropy_results
             }
     print("SRCKF complete!")
     
 if run_USKF:
     print("Running Unscented Schmidt Kalman Filter...")
-    uskf_results, covariance_results, residual_results = run_unscented_schmidt_KF(Xtruth, tk, c, Pcc, Rk, Qd, initial_covar)
+    uskf_results, covariance_results, residual_results, entropy_results = run_unscented_schmidt_KF(Xtruth, tk, c, Pcc, Rk, Qd, initial_covar, 0, H_criteria, 0)
     filter_results['USKF'] = {
         'states': uskf_results,
         'covariances': covariance_results, 
-        'residuals': residual_results
+        'residuals': residual_results,
+        'entropy': entropy_results
             }
     print("USKF complete!")
     
 if run_UKF:
     print("Running Unscented Kalman Filter...")
-    ukf_results, covariance_results, residual_results = run_unscented_kalman_filter(Xtruth, tk, Rk, Qd, initial_covar)
+    ukf_results, covariance_results, residual_results, entropy_results = run_unscented_kalman_filter(Xtruth, X_initial, DSN_Sim_measurements, ground_station_state, tk, Rk, Qd, initial_covar, 0, H_criteria, 0)
     filter_results['UKF'] = {
         'states': ukf_results,
         'covariances': covariance_results, 
-        'residuals': residual_results
+        'residuals': residual_results,
+        'entropy': entropy_results
             }
     print("UKF complete!")
 
-# if hybridisation:
-#     filter_results['hybrid'] = run_hybrid(Xtruth, tk, stable, unstable, bc1, bc2, Qd, c, Pcc, Qd, initial_covar)
-    
+if hybridisation:
+    print("Running Hybrid Filter: {stable} - {unstable}")
+    hybrid_results, covariance_results, residual_results, entropy_results = run_hybrid(Xtruth, X_initial, DSN_Sim_measurements, ground_station_state, tk, stable, unstable, H_criteria, c, Pcc, Qd, Rk, initial_covar)
+    filter_results['hybrid'] = {
+        'states': hybrid_results,
+        'covariances': covariance_results, 
+        'residuals': residual_results,
+        'entropy': entropy_results
+            }
+    print("{stable} - {unstable} complete!")
     
 
 #visualisation
@@ -189,6 +203,7 @@ if run_UKF:
 
 # Extract time array
 T = tk
+
 
 # Check if filter results dictionary has any entries
 if filter_results:
@@ -204,7 +219,7 @@ else:
 Struth = Xtruth[:, :3]
 
 # Visualization parameters
-MoonSphere = 0  # 1 if the Moon is drawn as a sphere, 0 for a point
+MoonSphere = 1 # 1 if the Moon is drawn as a sphere, 0 for a point
 RotationalF = 1  # Plot in Earth-Moon rotational frame (0=inertial)
 Converged = 0    # Plot initial and converged trajectory (for optimization)
 Earth = 0        # Plot the Earth (only in rotational frame)

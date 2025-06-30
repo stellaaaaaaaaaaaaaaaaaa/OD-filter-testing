@@ -11,7 +11,7 @@
 # H = 0.5 * log|2*pi*e*P|
 # P = state covariance at each state
 
-def run_hybrid(XREF, tk, stable, unstable, H_criteria, Rk, Qd, c, Pcc, initial_covar):
+def run_hybrid(Xtruth, X_initial, DSN_Sim_measurements, ground_station_state, tk, stable, unstable, H_criteria, c, Pcc, Qd, Rk, initial_covar):
     
     from EKF import run_extended_kalman_filter
     from CKF import run_cubature_kalman_filter
@@ -21,63 +21,96 @@ def run_hybrid(XREF, tk, stable, unstable, H_criteria, Rk, Qd, c, Pcc, initial_c
     
     import numpy as np
     
-    #note that another point of comparison can be the widening of the boundary
-    #testing how changing the region increases or decreases accuracy and efficiency of the filter overall
+    hybrid_results = []
+    covariance_results = []
+    residual_results = []
+    entropy_results = []
     
-    state_dim = 6  # State dimension is 6 (position and velocity)
-    n_points = len(XREF)
-    
-    hybrid_results = np.zeros_like(XREF)
-    covariance_results = np.zeros((n_points, state_dim, state_dim))
-    residual_results = np.zeros_like(XREF)
-    entropy_results = np.zeros(len(XREF))
-    
-    #start with stable region filter
+    # Start with stable region filter
     current_index = 0
-    use_stable = True  
+    use_stable = True
     
-    while current_index < len(XREF) -1:
+    # Keep track of current state and covariance for continuation
+    current_state = np.array(X_initial).copy()
+    current_covar = np.array(initial_covar).copy()
+    
+    while current_index < len(Xtruth) - 1:
         
-        #remaining traj
-        XREF_to_go = XREF[current_index:]
-        tk_to_go = tk[current_index:]
-    
+        # Slice trajectories from current position
+        Xtruth_remaining = Xtruth[current_index:]
+        DSN_Sim_measurements_remaining = DSN_Sim_measurements[current_index:]
+        tk_remaining = tk[current_index:]
+        
         if use_stable:
             if stable == 'EKF':
-                results = run_extended_kalman_filter(XREF_to_go, tk_to_go, Rk, Qd, initial_covar, 1, H_criteria, 1)
-        
+                results = run_extended_kalman_filter(
+                    Xtruth_remaining, current_state, DSN_Sim_measurements_remaining, 
+                    ground_station_state, tk_remaining, Rk, Qd, current_covar, 
+                    1, H_criteria, 1
+                )
             elif stable == 'CKF':
-                results = run_cubature_kalman_filter(XREF_to_go, tk_to_go, Rk, Qd, initial_covar, 1, H_criteria, 1)
-        
+                results = run_cubature_kalman_filter(
+                    Xtruth_remaining, current_state, DSN_Sim_measurements_remaining, 
+                    ground_station_state, tk_remaining, Rk, Qd, current_covar, 
+                    1, H_criteria, 1
+                )
         else:
             if unstable == 'CKF':
-                results = run_cubature_kalman_filter(XREF_to_go, tk_to_go, Rk, Qd, initial_covar, 1, H_criteria, 0)
-                
+                results = run_cubature_kalman_filter(
+                    Xtruth_remaining, current_state, DSN_Sim_measurements_remaining, 
+                    ground_station_state, tk_remaining, Rk, Qd, current_covar, 
+                    1, H_criteria, 0
+                )
             elif unstable == 'SRCKF':
-                results = run_square_root_CKF(XREF_to_go, tk_to_go, Rk, Qd, initial_covar, 1, H_criteria, 0)
-                
+                results = run_square_root_CKF(
+                    Xtruth_remaining, current_state, DSN_Sim_measurements_remaining, 
+                    ground_station_state, tk_remaining, Rk, Qd, current_covar, 
+                    1, H_criteria, 0
+                )
             elif unstable == 'USKF':
-               results = run_unscented_schmidt_KF(XREF_to_go, tk_to_go, Rk, Qd, initial_covar, 1, H_criteria, 0)
-                
+                results = run_unscented_schmidt_KF(
+                    DSN_Sim_measurements_remaining, tk_remaining, Rk, Qd, 
+                    current_covar, 1, H_criteria, 0
+                )
             elif unstable == 'UKF':
-                results = run_unscented_kalman_filter(XREF_to_go, tk_to_go, Rk, Qd, initial_covar, 1, H_criteria, 0)
-    
+                results = run_unscented_kalman_filter(
+                    Xtruth_remaining, current_state, DSN_Sim_measurements_remaining, 
+                    ground_station_state, tk_remaining, Rk, Qd, current_covar, 
+                    1, H_criteria, 0
+                )
+        
         state, covariance, residual, entropy = results
         
+        # Append results (skip first point if not the first iteration to avoid duplication)
         if current_index == 0:
-            hybrid_results.extend(state)
-            covariance_results.extend(covariance)
-            residual_results.extend(residual)
-            entropy_results.extend(entropy)
+            hybrid_results.extend(state.tolist())
+            covariance_results.extend(covariance.tolist())
+            residual_results.extend(residual.tolist())
+            entropy_results.extend(entropy.tolist())
         else:
-            hybrid_results.extend(state[1:])
-            covariance_results.extend(covariance[1:])
-            residual_results.extend(residual[1:])
-            entropy_results.extend(entropy[1:])
+            hybrid_results.extend(state[1:].tolist())
+            covariance_results.extend(covariance[1:].tolist())
+            residual_results.extend(residual[1:].tolist())
+            entropy_results.extend(entropy[1:].tolist())
         
-        # Update index and switch filter
+        # Update current state and covariance for next iteration
+        current_state = np.array(state[-1]).copy()  # Last state from this filter run
+        current_covar = np.array(covariance[-1]).copy()  # Last covariance from this filter run
+        
+        # Update index to continue from where this filter left off
         current_index += len(state) - 1
-        use_stable = not use_stable  # swap filters
+        
+        # Switch filter for next iteration
+        use_stable = not use_stable
+        
+        # Safety check to prevent infinite loops
+        if current_index >= len(Xtruth) - 1:
+            break
     
-    return hybrid_results, covariance_results, residual_results, entropy_results 
-
+    # Convert to numpy arrays after the loop is complete
+    hybrid_results = np.array(hybrid_results)
+    covariance_results = np.array(covariance_results)
+    residual_results = np.array(residual_results)
+    entropy_results = np.array(entropy_results)
+    
+    return hybrid_results, covariance_results, residual_results, entropy_results

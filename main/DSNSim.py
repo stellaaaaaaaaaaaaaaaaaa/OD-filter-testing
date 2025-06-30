@@ -10,9 +10,9 @@
 # --> Convert truth data from barycentric rotating frame (BRF) to ECI -->
 # --> Generate range and range rate data by subtracting the position of the station from the data --> ***
 # --> Apply noise to the measurements to generate 'reference data' --->
-# --> Convert measurements back to BRF
+# --> Convert measurements back to MCI
 
-def generate_DSNSim_from_truth(truth_data, tk):
+def DSN_generation(truth_data, tk):
     
     import numpy as np
     
@@ -35,7 +35,17 @@ def generate_DSNSim_from_truth(truth_data, tk):
         y = (RN + h) * np.cos(phi) * np.sin(Lambda)
         z = ((1 - e**2) * RN + h) * np.sin(phi)
         
-        ECEF_coordinates = [x, y, z]
+        ECEF_coordinates = [x, y, z]# Test: assume tk is already J2000 ephemeris time
+        et = tk[0]  # Use tk directly without conversion
+
+        # Check what date this corresponds to
+        import spiceypy as spice
+        
+        spice.furnsh("visualisation processes/input/naif0012.tls")  # Leap seconds kernel
+        spice.furnsh("de430.bsp")     # Earth-Moon ephemeris kernel
+        
+        utc_time = spice.et2utc(et, 'C', 0)
+        print(f"Date: {utc_time}")
         
         return ECEF_coordinates
     
@@ -58,7 +68,7 @@ def generate_DSNSim_from_truth(truth_data, tk):
             # UTC = #Universal Time Coordinated
             #theta = omega * (GMST - (UT1 - UTC)) #angular rotation occurred since Epoch, note that UT1 == UTC therefore:
             omega = 0.26179939 / 60 / 60 #angular rotational velocity of Earth, rad/hr to sec
-            theta = omega * GMST
+            theta = GMST
             
             #form RotationMatrix
             RotationMatrix = np.zeros((3, 3))
@@ -69,14 +79,71 @@ def generate_DSNSim_from_truth(truth_data, tk):
             rotated_coordinates = RotationMatrix.T @ coordinates[i, :3]
             all_rotated_coordinates[i, :3] = rotated_coordinates
             
-            omega_radpersec = omega/60/60
-            
-            station_velocity = np.cross(np.array([0, 0, omega_radpersec]), rotated_coordinates)
+            station_velocity = np.cross(np.array([0, 0, omega]), rotated_coordinates)
             all_rotated_velocities[i, :3] = station_velocity  
             
-        return all_rotated_coordinates, all_rotated_velocities
+        state = np.zeros((len(time), 6))
+        state[:, :3] = all_rotated_coordinates
+        state[:, 3:6] = all_rotated_velocities
             
+        return state
+    
+    
+    def ECI_to_BCI(coordinates, time):
+        
+        #first convert ECI back to BCI
+        #note time is already in ephemeris time (sec)
+        
+        import spiceypy as spice
+        
+        spice.furnsh("visualisation processes/input/naif0012.tls")  # Leap seconds kernel
+        spice.furnsh("de430.bsp")     # Earth-Moon ephemeris kernel
+       
+        converted_coord = np.zeros_like(coordinates) #initialise empty array
+        
+        m_e = 5.9722e24  # kg
+        m_m = 7.3477e22   # kg
+        
+        for i in range(len(coordinates)):
             
+            et = time[i]
+            Earth_State = spice.spkezr('399', et, 'J2000', 'NONE', '0')[0]
+            Moon_State = spice.spkezr('301', et, 'J2000', 'NONE', '0')[0]
+            
+            barypos = (m_e * Earth_State[:3] + m_m * Moon_State[:3]) / (m_e + m_m)
+            baryvel = (m_e * Earth_State[3:6] + m_m * Moon_State[3:6]) / (m_e + m_m)
+            
+            EarthPositionData = Earth_State[:3] - barypos
+            EarthVelocityData = Earth_State[3:6] - baryvel
+            
+            converted_coord[i, 0:3] = coordinates[i, 0:3] + EarthPositionData
+            converted_coord[i, 3:6] = coordinates[i, 3:6] + EarthVelocityData
+            
+        return converted_coord
+    
+    def ECI_to_MCI(coordinates, time):
+        
+        #first convert ECI back to MCI
+        #note time is already in ephemeris time (sec)
+        
+        import spiceypy as spice
+        
+        spice.furnsh("visualisation processes/input/naif0012.tls")  # Leap seconds kernel
+        spice.furnsh("de430.bsp")     # Earth-Moon ephemeris kernel
+       
+        converted_coord = np.zeros_like(coordinates) #initialise empty array
+        
+        
+        for i in range(len(coordinates)):
+            
+            et = time[i]
+            Moon_State = spice.spkezr('301', et, 'J2000', 'NONE', '0')[0]
+            
+            converted_coord[i, 0:3] = coordinates[i, 0:3] - Moon_State[:3]
+            converted_coord[i, 3:6] = coordinates[i, 3:6] - Moon_State[3:6]    
+            
+        return converted_coord
+    
     #Station Coordinates (latitude (deg), longitude (deg), height (km))
     #for NRHO L2 Southern orbit, can assume no lunar blockages (reason why orbit is so advantageous is constant LoS with Earth)
     #therefore only have to consider Earth blockages for the ground stations
@@ -87,11 +154,9 @@ def generate_DSNSim_from_truth(truth_data, tk):
     
     Canberra_ECEF_coord = geodetic_to_ECEF(Canberra_coord)
     Canberra_ECEF_coord_array = np.full((len(tk), 3), Canberra_ECEF_coord)  
-    Canberra_ECI_coord, Canberra_ECI_velocity = ECEF_to_ECI(Canberra_ECEF_coord_array, tk)
+    Canberra_ECI_state = ECEF_to_ECI(Canberra_ECEF_coord_array, tk)
+    Canberra_BCI_state = ECI_to_BCI(Canberra_ECI_state, tk)
     
-    Canberra_ECI_state = np.zeros_like(truth_data)
-    Canberra_ECI_state[:, 0:3] = Canberra_ECI_coord  
-    Canberra_ECI_state[:, 3:6] = Canberra_ECI_velocity
     
     #Madrid, Spain
     #https://www.mdscc.nasa.gov/index.php/en/training-and-visitors-center/visitors-center/horarios-e-informacion-general/#:~:text=Directions,that%20are%20developed%20in%20MDSCC.
@@ -99,12 +164,10 @@ def generate_DSNSim_from_truth(truth_data, tk):
     
     Madrid_ECEF_coord = geodetic_to_ECEF(Madrid_coord)
     Madrid_ECEF_coord_array = np.full((len(tk), 3), Madrid_ECEF_coord)  
-    Madrid_ECI_coord, Madrid_ECI_velocity = ECEF_to_ECI(Madrid_ECEF_coord_array, tk)
+    Madrid_ECI_state = ECEF_to_ECI(Madrid_ECEF_coord_array, tk)
+    Madrid_BCI_state = ECI_to_BCI(Madrid_ECI_state, tk)
     
-    Madrid_ECI_state = np.zeros_like(truth_data)
-    Madrid_ECI_state[:, 0:3] = Madrid_ECI_coord  
-    Madrid_ECI_state[:, 3:6] = Madrid_ECI_velocity  
-    
+  
     #Goldstone, California, USA
     #https://pds.nasa.gov/ds-view/pds/viewContext.jsp?identifier=urn%3Anasa%3Apds%3Acontext%3Atelescope%3Agoldstone.dss14_70m&version=1.0
     #elevation: https://ipnpr.jpl.nasa.gov/progress_report/42-196/196A.pdf
@@ -112,66 +175,38 @@ def generate_DSNSim_from_truth(truth_data, tk):
     
     Goldstone_ECEF_coord = geodetic_to_ECEF(Goldstone_coord)
     Goldstone_ECEF_coord_array = np.full((len(tk), 3), Goldstone_ECEF_coord)  
-    Goldstone_ECI_coord, Goldstone_ECI_velocity = ECEF_to_ECI(Goldstone_ECEF_coord_array, tk)
+    Goldstone_ECI_state = ECEF_to_ECI(Goldstone_ECEF_coord_array, tk)
+    Goldstone_BCI_state = ECI_to_BCI(Goldstone_ECI_state, tk)
     
-    Goldstone_ECI_state = np.zeros_like(truth_data)
-    Goldstone_ECI_state[:, 0:3] = Goldstone_ECI_coord  
-    Goldstone_ECI_state[:, 3:6] = Goldstone_ECI_velocity  
+    DSN_Sim = []
+    selected_stations = []
+    #initialise array for ground stations
     
-    #Convert truth data BRF (moon centred inertial frame) --> ECI
-    
-    def MCF_to_ECI(coordinates, time):
+    for i in range(len(truth_data)):
         
-        #note time is already in ephemeris time (sec)
+        visible_stations = []
         
-        import spiceypy as spice
+        #need to determine which ground station communicates with the spacecraft
+        #so which ground stations have line of sight (-80 < elevation < 80)
         
-        spice.furnsh("visualisation processes/input/naif0012.tls")  # Leap seconds kernel
-        spice.furnsh("de430.bsp")     # Earth-Moon ephemeris kernel
-        
-        converted_coord = np.zeros_like(coordinates) #initialise empty array
-        Earth_State_Data = np.zeros((len(time), 6))  
-        
-        for i in range(len(coordinates)):
-            
-            et = time[i]
-            Earth_State = spice.spkezr('399', et, 'J2000', 'NONE', '301')[0]
-            Earth_State_Data[i] = Earth_State
-            
-            EarthPositionData = Earth_State_Data[i, :3]
-            EarthVelocityData = Earth_State_Data[i, 3:6]
-            
-            converted_coord[i, 0:3] = coordinates[i, 0:3] + EarthPositionData
-            converted_coord[i, 3:6] = coordinates[i, 3:6] + EarthVelocityData
-        
-        return converted_coord
-    
-    ECI_truth = MCF_to_ECI(truth_data, tk)
-    
-    DSN_sim_coord = []
-    visible_indices = []
-    
-    for i in range(len(ECI_truth)):
-        
-        #check line of sight for each station via elevation angle
         #elevation angle should be within bounds 0 --> 180
-        #https://www.satnow.com/calculators/coverage-angle-of-a-satellite
+       #     #https://www.satnow.com/calculators/coverage-angle-of-a-satellite
         
         #determine satellite position relative to each ground station
         #i.e. ground station-to-satellite vector
         
-        Canberra_Satellite_Vector = ECI_truth[i, 0:3] - Canberra_ECI_state[i, 0:3]
-        Madrid_Satellite_Vector = ECI_truth[i, 0:3] - Madrid_ECI_state[i, 0:3]
-        Goldstone_Satellite_Vector = ECI_truth[i, 0:3] - Goldstone_ECI_state[i, 0:3]
+        Canberra_Satellite_Vector = truth_data[i, 0:3] - Canberra_BCI_state[i, 0:3]
+        Madrid_Satellite_Vector = truth_data[i, 0:3] - Madrid_BCI_state[i, 0:3]
+        Goldstone_Satellite_Vector = truth_data[i, 0:3] - Goldstone_BCI_state[i, 0:3]
         
         #note Earth-to-ground-station vectors are = ECI_states
-        Earth_Canberra_Vector = Canberra_ECI_state[i, 0:3]
-        Earth_Madrid_Vector = Madrid_ECI_state[i, 0:3]
-        Earth_Goldstone_Vector = Goldstone_ECI_state[i, 0:3]
+        Earth_Canberra_Vector = Canberra_BCI_state[i, 0:3]
+        Earth_Madrid_Vector = Madrid_BCI_state[i, 0:3]
+        Earth_Goldstone_Vector = Goldstone_BCI_state[i, 0:3]
         
-        Canberra_Earth_mag = np.linalg.norm(Canberra_ECI_state[i, 0:3])
-        Madrid_Earth_mag = np.linalg.norm(Madrid_ECI_state[i, 0:3])
-        Goldstone_Earth_mag = np.linalg.norm(Goldstone_ECI_state[i, 0:3])
+        Canberra_Earth_mag = np.linalg.norm(Canberra_BCI_state[i, 0:3])
+        Madrid_Earth_mag = np.linalg.norm(Madrid_BCI_state[i, 0:3])
+        Goldstone_Earth_mag = np.linalg.norm(Goldstone_BCI_state[i, 0:3])
     
         Canberra_Satellite_distance = np.linalg.norm(Canberra_Satellite_Vector)    
         Madrid_Satellite_distance = np.linalg.norm(Madrid_Satellite_Vector)    
@@ -181,7 +216,7 @@ def generate_DSNSim_from_truth(truth_data, tk):
         #https://www.satnow.com/calculators/coverage-angle-of-a-satellite - see image
         
         elevation_mask = np.deg2rad(10) #elevation angle must be greater than 10 deg
-        negative_em = np.deg2rad(-170+90) #elevation angle must be greater than 10 deg in the opposite direction as well ie -170 or -80 deg from the zenith
+        negative_em = np.deg2rad(-80) #elevation angle must be greater than 10 deg in the opposite direction as well ie -170 or -80 deg from the zenith
         #https://ipnpr.jpl.nasa.gov/2000-2009/progress_report/42-160/160A.pdf
         
         #angles between horizon and satellite to ground vector
@@ -193,105 +228,49 @@ def generate_DSNSim_from_truth(truth_data, tk):
         elevation_M = np.pi/2 - np.arccos(cos_M) 
         elevation_G = np.pi/2 - np.arccos(cos_G) 
 
-        Canberra_values = [Canberra_Earth_mag, elevation_C, Canberra_Satellite_distance]
-        Madrid_values = [Madrid_Earth_mag, elevation_M, Madrid_Satellite_distance]
-        Goldstone_values = [Goldstone_Earth_mag, elevation_G, Goldstone_Satellite_distance]
+        # Collect visible stations
+        if elevation_C > elevation_mask or elevation_C > negative_em:
+            distance_C = np.linalg.norm(Canberra_Satellite_Vector)
+            visible_stations.append((0, 'Canberra', Canberra_BCI_state[i], distance_C))
+            
+        if elevation_M > elevation_mask or elevation_M > negative_em:
+            distance_M = np.linalg.norm(Madrid_Satellite_Vector)
+            visible_stations.append((1, 'Madrid', Madrid_BCI_state[i], distance_M))
+            
+        if elevation_G > elevation_mask or elevation_G > negative_em:
+            distance_G = np.linalg.norm(Goldstone_Satellite_Vector)
+            visible_stations.append((2, 'Goldstone', Goldstone_BCI_state[i], distance_G))
         
-        visible_stations = []
-        station_data = [Canberra_values, Madrid_values, Goldstone_values]
-        
-        for j, (values) in enumerate(station_data):
-            if values[1] > elevation_mask or values[1] > negative_em:
-                visible_stations.append((j, values[2]))  # (station_index, station_to_satellite_distance)
-
         if not visible_stations:
-            print("no visible stations")
+            DSN_Sim.append(None)
+            selected_stations.append(np.zeros(6))
             continue
+        
+        # Select best station (closest)
+        best_station = min(visible_stations, key=lambda x: x[3])
+        station_index, station_name, best_station_state, distance = best_station
+    
+        position = truth_data[i, 0:3] - best_station_state[0:3]       
+        velocity = truth_data[i, 3:6] - best_station_state[3:6] 
 
-        #select best station based on distance between spacecraft and each station
-        visible_stations_magnitudes = [station[1] for station in visible_stations]
+        #convert to scalars
+        RANGE = np.linalg.norm(position)
+        RANGE_RATE = np.dot(position, velocity) / np.linalg.norm(position) #radial, angle measurement
+        
+        #add noise and bias
+        
+        range_bias = np.random.normal(0, 7.5/1000) # m to km
+        range_noise = np.random.normal(0, 3/1000) # m to km
+        DSN_sim_range = RANGE + range_bias + range_noise
+        
+        range_rate_bias = np.random.normal(0, 2.5/10000) # mm/s to km/s
+        range_rate_noise = np.random.normal(0, 1/10000) # mm/s to km/s
+        DSN_sim_range_rate = RANGE_RATE + range_rate_bias + range_rate_noise
+        
+        selected_stations.append(best_station_state)
+        
+        DSN_Sim.append([DSN_sim_range, DSN_sim_range_rate])
     
-        best_station = min(visible_stations_magnitudes)
-        best_station_index = [station[0] for station in visible_stations][visible_stations_magnitudes.index(best_station)]
-
-        # Use the station values for further calculations
-        ECI_states = [Canberra_ECI_state, Madrid_ECI_state, Goldstone_ECI_state]
-        best_station_values = ECI_states[best_station_index]
-        
-        #generate range and range rate data --> !! convert to individual values
-        
-        DSN_sim_range = ECI_truth[i, 0:3] - best_station_values[i, 0:3]
-        
-        range_bias = np.random.normal(0, 7.5/1000/3, DSN_sim_range.shape) # m to km
-        range_noise = np.random.normal(0, 3/1000/3, DSN_sim_range.shape) # m to km
-        
-        DSN_sim_range = DSN_sim_range + range_bias + range_noise
-        
-        DSN_sim_range_rate = ECI_truth[i, 3:6] - best_station_values[i, 3:6]
-        
-        range_rate_bias = np.random.normal(0, 2.5/10000/3, DSN_sim_range_rate.shape) # mm/s to km/s
-        range_rate_noise = np.random.normal(0, 1/10000/3, DSN_sim_range_rate.shape) # mm/s to km/s
-        
-        DSN_sim_range_rate = DSN_sim_range_rate + range_rate_bias + range_rate_noise
-        
-        DSN_measurement = np.concatenate([DSN_sim_range, DSN_sim_range_rate])
-        DSN_sim_coord.append(DSN_measurement)
-        visible_indices.append(i)
-
-    # Convert to final reference trajectory (only visible states)
-    DSN_sim_coord = np.array(DSN_sim_coord)
+    ground_station_state = np.array(selected_stations)
     
-    
-    def ECI_to_BRF(coordinates, time):
-        
-        #first convert ECI back to BCI
-        #note time is already in ephemeris time (sec)
-        
-        import spiceypy as spice
-        
-        spice.furnsh("visualisation processes/input/naif0012.tls")  # Leap seconds kernel
-        spice.furnsh("de430.bsp")     # Earth-Moon ephemeris kernel
-       
-        ECI_to_BRF_coord = np.zeros_like(coordinates) #initialise empty array
-        
-        for i in range(len(coordinates)):
-            
-            et = time[i]
-            Earth_State = spice.spkezr('399', et, 'J2000', 'NONE', '3')[0]
-            Moon_State = spice.spkezr('301', et, 'J2000', 'NONE', '3')[0]
-            
-            EarthPositionData = Earth_State[:3]
-            EarthVelocityData = Earth_State[3:]
-        
-            MoonPositionData = Moon_State[:3]
-            MoonVelocityData = Moon_State[3:]
-            
-            ECI_to_BCI_position = coordinates[i, 0:3] + EarthPositionData
-            ECI_to_BCI_velocity = coordinates[i, 3:6] + EarthVelocityData
-      
-            #BCI to BRF --> see HALO paper 3.2.3
-            Earth_Moon_Pos = MoonPositionData - EarthPositionData
-        
-            u_R = Earth_Moon_Pos / np.linalg.norm(Earth_Moon_Pos)
-        
-            h_Earth_Moon = np.cross(Earth_Moon_Pos, MoonVelocityData - EarthVelocityData) #angular momentum of system
-            u_theta = h_Earth_Moon / np.linalg.norm(h_Earth_Moon)
-        
-            u_z = np.cross(u_theta, u_R)
-        
-            RotationMatrix = np.column_stack((u_R, u_theta, u_z))
-        
-            omega_scalar = np.linalg.norm(h_Earth_Moon) / np.linalg.norm(Earth_Moon_Pos)**2
-            omega = omega_scalar * u_z
-        
-            BRF_position = RotationMatrix.T @ ECI_to_BCI_position
-            BRF_velocity = RotationMatrix.T @ (ECI_to_BCI_velocity - np.cross(omega, BRF_position))
-            
-            ECI_to_BRF_coord[i, 0:3] = BRF_position
-            ECI_to_BRF_coord[i, 3:6] = BRF_velocity
-        
-        return ECI_to_BRF_coord
-    
-    DSN_Sim_Data = ECI_to_BRF(DSN_sim_coord, tk)
-    
-    return DSN_Sim_Data  
+    return DSN_Sim, ground_station_state
