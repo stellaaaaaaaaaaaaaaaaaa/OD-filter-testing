@@ -23,7 +23,7 @@ pip install -r requirements.txt
 This will install the dependencies listed in the text file. 
 
 Secondly, de430.bsp must be downloaded  (download here: https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/) and installed into multiple locations:
-- the main folder 'RUN HERE'
+- the main folder 'main'
 - input
 - ker
 - visualisation processes
