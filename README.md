@@ -15,6 +15,7 @@ This interface lastly generates visualisation and error plots for direct compari
 Note that the HALO propagator has now been integrated into the program, and that propagation no longer relies on CR3BP modelling. 
 
 This project is largely developed using the HALO propagator, link to GitHub repositary here: [High-precision-Analyser-of-Lunar-Orbits](https://github.com/yang-researchgroup/High-precision-Analyser-of-Lunar-Orbits). 
+Some of the propagation was also achieved using the python version, available here:[https://github.com/zhangnailiang/halo-python]
 
 There are additional files required to be installed before running this tool. Firstly, run:
 pip install -r requirements.txt
